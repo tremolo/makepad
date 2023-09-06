@@ -13,6 +13,7 @@ pub struct Layout<'a> {
     pub text: &'a Text,
     pub inline_inlays: &'a [Vec<(usize, InlineInlay)>],
     pub wrap_positions: &'a [Vec<usize>],
+    pub wrap_indentation_width: &'a [usize],
     pub block_inlays: &'a [(usize, BlockInlay)],
 }
 
@@ -32,6 +33,7 @@ impl<'a> Layout<'a> {
             text: &self.text.as_lines()[index],
             inlays: &self.inline_inlays[index],
             wrap_positions: &self.wrap_positions[index],
+            wrap_indentation_width: self.wrap_indentation_width[index],
         }
     }
 
@@ -42,6 +44,7 @@ impl<'a> Layout<'a> {
             text: self.text.as_lines()[start..end].iter(),
             inlays: self.inline_inlays[start..end].iter(),
             wrap_positions: self.wrap_positions[start..end].iter(),
+            wrap_indentation_width: self.wrap_indentation_width[start..end].iter(),
         }
     }
 
@@ -69,6 +72,7 @@ pub struct Lines<'a> {
     pub text: Iter<'a, String>,
     pub inlays: Iter<'a, Vec<(usize, InlineInlay)>>,
     pub wrap_positions: Iter<'a, Vec<usize>>,
+    pub wrap_indentation_width: Iter<'a, usize>,
 }
 
 impl<'a> Iterator for Lines<'a> {
@@ -81,34 +85,28 @@ impl<'a> Iterator for Lines<'a> {
             text: self.text.next()?,
             inlays: self.inlays.next()?,
             wrap_positions: self.wrap_positions.next()?,
+            wrap_indentation_width: *self.wrap_indentation_width.next()?,
         })
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Line<'a> {
-    fold_position: usize,
-    fold_scale: f64,
-    text: &'a str,
-    inlays: &'a [(usize, InlineInlay)],
-    wrap_positions: &'a [usize],
+    pub fold_position: usize,
+    pub fold_scale: f64,
+    pub text: &'a str,
+    pub inlays: &'a [(usize, InlineInlay)],
+    pub wrap_positions: &'a [usize],
+    pub wrap_indentation_width: usize,
 }
 
 impl<'a> Line<'a> {
-    pub fn height(&self) -> f64 {
-        self.row_count() as f64 * self.fold_scale
-    }
-
-    pub fn row_count(&self) -> usize {
+    pub fn height(&self) -> usize {
         self.wrap_positions.len() + 1
     }
 
-    pub fn fold_position(&self) -> usize {
-        self.fold_position
-    }
-
-    pub fn fold_scale(&self) -> f64 {
-        self.fold_scale
+    pub fn folded_height(&self) -> f64 {
+        self.height() as f64 * self.fold_scale
     }
 
     pub fn inline_elements(&self) -> InlineElements<'_> {

@@ -1,10 +1,11 @@
 use {
     crate::{
         history::{Edit, EditKind, History},
-        layout::Layout,
+        layout::{Layout, Line},
         move_ops,
         selection::{Cursor, Region, Selection},
         text::{Change, Text},
+        wrap,
     },
     std::{
         collections::{HashMap, HashSet},
@@ -34,6 +35,7 @@ impl State {
             inline_inlays: &document.inline_inlays,
             block_inlays: &document.block_inlays,
             wrap_positions: &session.wrap_positions,
+            wrap_indentation_width: &session.wrap_indentation_width,
         }
     }
 
@@ -138,6 +140,7 @@ impl State {
                 inline_inlays: &document.inline_inlays,
                 block_inlays: &document.block_inlays,
                 wrap_positions: &session.wrap_positions,
+                wrap_indentation_width: &session.wrap_indentation_width,
             },
         );
         document.history.force_new_undo_group();
@@ -211,16 +214,32 @@ pub struct BlockWidget {
 
 #[derive(Debug)]
 struct Session {
-    y: Vec<f64>,
     fold_position: Vec<usize>,
     fold_scale: Vec<f64>,
     wrap_positions: Vec<Vec<usize>>,
+    wrap_indentation_width: Vec<usize>,
     selection: Selection,
     last_added_region: usize,
     document: DocumentId,
 }
 
 impl Session {
+    fn wrap_line(&mut self, document: &Document, index: usize) {
+        self.wrap_indentation_width[index] = wrap::wrap(
+            Line {
+                fold_position: 0,
+                fold_scale: 1.0,
+                text: &document.history.as_text().as_lines()[index],
+                inlays: &document.inline_inlays[index],
+                wrap_positions: &[],
+                wrap_indentation_width: 0,
+            },
+            80,
+            4,
+            &mut self.wrap_positions[index],
+        );
+    }
+
     fn update_after_text_modified(
         &mut self,
         document: &Document,
@@ -234,11 +253,6 @@ impl Session {
                 self.selection.apply_change(&change);
             }
         }
-        self.update_y(document);
-    }
-
-    fn update_y(&mut self, document: &Document) {
-        // TODO
     }
 }
 
