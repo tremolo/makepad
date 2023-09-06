@@ -1,4 +1,4 @@
-use std::ops::{Add, AddAssign, Sub, SubAssign};
+use std::{cmp::Ordering, ops::{Add, AddAssign, Sub, SubAssign}};
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct Text {
@@ -16,8 +16,8 @@ impl Text {
 
     pub fn length(&self) -> Length {
         Length {
-            lines: self.lines.len() - 1,
-            bytes: self.lines.last().unwrap().len(),
+            line_count: self.lines.len() - 1,
+            byte_count: self.lines.last().unwrap().len(),
         }
     }
 
@@ -28,14 +28,17 @@ impl Text {
     pub fn slice(&self, start: Position, length: Length) -> Text {
         let end = start + length;
         Self {
-            lines: if length.lines == 0 {
-                [self.lines[start.line][start.byte..start.byte + length.bytes].to_string()].into()
+            lines: if length.line_count == 0 {
+                [self.lines[start.line_index]
+                    [start.byte_index..start.byte_index + length.byte_count]
+                    .to_string()]
+                .into()
             } else {
-                let front = &self.lines[start.line][start.byte..];
-                let middle = self.lines[start.line + 1..end.line]
+                let front = &self.lines[start.line_index][start.byte_index..];
+                let middle = self.lines[start.line_index + 1..end.line_index]
                     .iter()
                     .map(|string| string.as_str());
-                let back = &self.lines[end.line][..end.byte];
+                let back = &self.lines[end.line_index][..end.byte_index];
                 [front]
                     .into_iter()
                     .chain(middle)
@@ -58,28 +61,31 @@ impl Text {
     }
 
     fn insert(&mut self, position: Position, text: Text) {
-        if text.length().lines == 0 {
-            self.lines[position.line]
-                .replace_range(position.byte..position.byte, text.lines.first().unwrap());
+        if text.length().line_count == 0 {
+            self.lines[position.line_index].replace_range(
+                position.byte_index..position.byte_index,
+                text.lines.first().unwrap(),
+            );
         } else {
-            let before = &self.lines[position.line][..position.byte];
-            let after = &self.lines[position.line][position.byte..];
+            let before = &self.lines[position.line_index][..position.byte_index];
+            let after = &self.lines[position.line_index][position.byte_index..];
             let mut lines = text.lines;
             lines.first_mut().unwrap().replace_range(..0, before);
             lines.last_mut().unwrap().push_str(after);
-            self.lines.splice(position.line..position.line + 1, lines);
+            self.lines
+                .splice(position.line_index..position.line_index + 1, lines);
         }
     }
 
     fn delete(&mut self, start: Position, length: Length) {
         let end = start + length;
-        if length.lines == 0 {
-            self.lines[start.line].replace_range(start.byte..end.byte, "");
+        if length.line_count == 0 {
+            self.lines[start.line_index].replace_range(start.byte_index..end.byte_index, "");
         } else {
-            let before = &self.lines[start.line][..start.byte];
-            let after = &self.lines[end.line][end.byte..];
+            let before = &self.lines[start.line_index][..start.byte_index];
+            let after = &self.lines[end.line_index][end.byte_index..];
             self.lines.splice(
-                start.line..end.line + 1,
+                start.line_index..end.line_index + 1,
                 [[before, after].into_iter().collect()],
             );
         }
@@ -96,13 +102,29 @@ impl Default for Text {
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct Position {
-    pub line: usize,
-    pub byte: usize,
+    pub line_index: usize,
+    pub byte_index: usize,
 }
 
 impl Position {
-    pub fn apply_change(self, _change: &Change, _drift: Drift) -> Self {
-        unimplemented!()
+    pub fn apply_change(self, change: &Change, drift: Drift) -> Self {
+        match *change {
+            Change::Insert(position, ref text) => match self.cmp(&position) {
+                Ordering::Less => self,
+                Ordering::Equal => match drift {
+                    Drift::Before => self + text.length(),
+                    Drift::After => self,
+                },
+                Ordering::Greater => position + text.length() + (self - position),
+            },
+            Change::Delete(start, length) => {
+                if self < start {
+                    self
+                } else {
+                    start + (self - (start + length).min(self))
+                }
+            }
+        }
     }
 }
 
@@ -110,15 +132,15 @@ impl Add<Length> for Position {
     type Output = Self;
 
     fn add(self, length: Length) -> Self::Output {
-        if length.lines == 0 {
+        if length.line_count == 0 {
             Self {
-                line: self.line,
-                byte: self.byte + length.bytes,
+                line_index: self.line_index,
+                byte_index: self.byte_index + length.byte_count,
             }
         } else {
             Self {
-                line: self.line + length.lines,
-                byte: length.bytes,
+                line_index: self.line_index + length.line_count,
+                byte_index: length.byte_count,
             }
         }
     }
@@ -134,15 +156,15 @@ impl Sub for Position {
     type Output = Length;
 
     fn sub(self, other: Self) -> Self::Output {
-        if self.line == other.line {
+        if self.line_index == other.line_index {
             Length {
-                lines: 0,
-                bytes: self.byte - other.byte,
+                line_count: 0,
+                byte_count: self.byte_index - other.byte_index,
             }
         } else {
             Length {
-                lines: self.line - other.line,
-                bytes: self.byte,
+                line_count: self.line_index - other.line_index,
+                byte_count: self.byte_index,
             }
         }
     }
@@ -150,8 +172,8 @@ impl Sub for Position {
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct Length {
-    pub lines: usize,
-    pub bytes: usize,
+    pub line_count: usize,
+    pub byte_count: usize,
 }
 
 impl Length {
@@ -164,15 +186,15 @@ impl Add for Length {
     type Output = Self;
 
     fn add(self, other: Self) -> Self::Output {
-        if other.lines == 0 {
+        if other.line_count == 0 {
             Self {
-                lines: self.lines,
-                bytes: self.bytes + other.bytes,
+                line_count: self.line_count,
+                byte_count: self.byte_count + other.byte_count,
             }
         } else {
             Self {
-                lines: self.lines + other.lines,
-                bytes: other.bytes,
+                line_count: self.line_count + other.line_count,
+                byte_count: other.byte_count,
             }
         }
     }
@@ -188,15 +210,15 @@ impl Sub for Length {
     type Output = Self;
 
     fn sub(self, other: Self) -> Self::Output {
-        if self.lines == other.lines {
+        if self.line_count == other.line_count {
             Self {
-                lines: 0,
-                bytes: self.bytes - other.bytes,
+                line_count: 0,
+                byte_count: self.byte_count - other.byte_count,
             }
         } else {
             Self {
-                lines: self.lines - other.lines,
-                bytes: self.bytes,
+                line_count: self.line_count - other.line_count,
+                byte_count: self.byte_count,
             }
         }
     }

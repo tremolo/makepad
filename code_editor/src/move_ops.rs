@@ -25,25 +25,25 @@ pub fn move_right(cursor: Cursor, lines: &[String]) -> Cursor {
 }
 
 fn is_at_first_line(position: Position) -> bool {
-    position.line == 0
+    position.line_index == 0
 }
 
 fn is_at_last_line(position: Position, lines: &[String]) -> bool {
-    position.line == lines.len()
+    position.line_index == lines.len()
 }
 
 fn is_at_start_of_line(position: Position) -> bool {
-    position.byte == 0
+    position.byte_index == 0
 }
 
 fn is_at_end_of_line(position: Position, lines: &[String]) -> bool {
-    position.byte == lines[position.line].len()
+    position.byte_index == lines[position.line_index].len()
 }
 
 fn move_to_prev_grapheme(position: Position, lines: &[String]) -> Position {
     Position {
-        line: position.line,
-        byte: lines[position.line][..position.byte]
+        line_index: position.line_index,
+        byte_index: lines[position.line_index][..position.byte_index]
             .grapheme_indices()
             .next_back()
             .map(|(index, _)| index)
@@ -52,28 +52,28 @@ fn move_to_prev_grapheme(position: Position, lines: &[String]) -> Position {
 }
 
 fn move_to_next_grapheme(position: Position, lines: &[String]) -> Position {
-    let line = &lines[position.line];
+    let line = &lines[position.line_index];
     Position {
-        line: position.line,
-        byte: line[position.byte..]
+        line_index: position.line_index,
+        byte_index: line[position.byte_index..]
             .grapheme_indices()
             .nth(1)
-            .map(|(index, _)| position.byte + index)
+            .map(|(index, _)| position.byte_index + index)
             .unwrap_or(line.len()),
     }
 }
 
 fn move_to_end_of_prev_line(position: Position, lines: &[String]) -> Position {
-    let prev_line = position.line - 1;
+    let prev_line = position.line_index - 1;
     Position {
-        line: prev_line,
-        byte: lines[prev_line].len(),
+        line_index: prev_line,
+        byte_index: lines[prev_line].len(),
     }
 }
 
 fn move_to_start_of_next_line(position: Position) -> Position {
     Position {
-        line: position.line + 1,
-        byte: 0,
+        line_index: position.line_index + 1,
+        byte_index: 0,
     }
 }

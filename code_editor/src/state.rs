@@ -1,9 +1,11 @@
 use {
     crate::{
         history::{Edit, EditKind, History},
-        layout::{Layout, Line},
+        layout::{BlockElement, Layout, Line, WrappedElement},
         move_ops,
         selection::{Cursor, Region, Selection},
+        settings::Settings,
+        str::StrExt,
         text::{Change, Text},
         wrap,
     },
@@ -29,12 +31,14 @@ impl State {
         let session = &self.sessions[&session_id];
         let document = &self.documents[&session.document];
         Layout {
-            fold_position: &session.fold_position,
+            y: &session.y,
+            column_count: &session.column_count,
+            fold_column_index: &session.fold_column_index,
             fold_scale: &session.fold_scale,
             text: document.history.as_text(),
             inline_inlays: &document.inline_inlays,
             block_inlays: &document.block_inlays,
-            wrap_positions: &session.wrap_positions,
+            wrap_byte_indices: &session.wrap_byte_indices,
             wrap_indentation_width: &session.wrap_indentation_width,
         }
     }
@@ -134,12 +138,14 @@ impl State {
             &mut session.selection,
             &mut session.last_added_region,
             Layout {
-                fold_position: &session.fold_position,
+                y: &session.y,
+                column_count: &session.column_count,
+                fold_column_index: &session.fold_column_index,
                 fold_scale: &session.fold_scale,
                 text: document.history.as_text(),
                 inline_inlays: &document.inline_inlays,
                 block_inlays: &document.block_inlays,
-                wrap_positions: &session.wrap_positions,
+                wrap_byte_indices: &session.wrap_byte_indices,
                 wrap_indentation_width: &session.wrap_indentation_width,
             },
         );
@@ -198,7 +204,7 @@ pub enum InlineInlay {
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct InlineWidget {
     pub id: usize,
-    pub width: usize,
+    pub column_count: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -214,9 +220,12 @@ pub struct BlockWidget {
 
 #[derive(Debug)]
 struct Session {
-    fold_position: Vec<usize>,
+    settings: Settings,
+    y: Vec<f64>,
+    column_count: Vec<usize>,
+    fold_column_index: Vec<usize>,
     fold_scale: Vec<f64>,
-    wrap_positions: Vec<Vec<usize>>,
+    wrap_byte_indices: Vec<Vec<usize>>,
     wrap_indentation_width: Vec<usize>,
     selection: Selection,
     last_added_region: usize,
@@ -224,20 +233,92 @@ struct Session {
 }
 
 impl Session {
-    fn wrap_line(&mut self, document: &Document, index: usize) {
-        self.wrap_indentation_width[index] = wrap::wrap(
+    fn update_y(&mut self, document: &Document) {
+        let line_start = self.y.len();
+        let line_end = document.history.as_text().as_lines().len();
+        if line_start == line_end + 1 {
+            return;
+        }
+        let layout = Layout {
+            y: &[],
+            column_count: &self.column_count,
+            fold_column_index: &self.fold_column_index,
+            fold_scale: &self.fold_scale,
+            text: document.history.as_text(),
+            inline_inlays: &document.inline_inlays,
+            block_inlays: &document.block_inlays,
+            wrap_byte_indices: &self.wrap_byte_indices,
+            wrap_indentation_width: &self.wrap_indentation_width,
+        };
+        let mut y = if line_start == 0 {
+            0.0
+        } else {
+            self.y[line_start - 1] + layout.line(line_start - 1).height()
+        };
+        for element in layout.block_elements(line_start, line_end) {
+            match element {
+                BlockElement::Line { is_inlay, line } => {
+                    if !is_inlay {
+                        self.y.push(y);
+                    }
+                    y += line.height();
+                }
+                BlockElement::Widget(widget) => {
+                    y += widget.height;
+                }
+            }
+        }
+        self.y.push(y);
+    }
+
+    fn update_column_count(&mut self, document: &Document, line_index: usize) {
+        let mut max_column_count = 0;
+        let mut column_count = 0;
+        let line = Line {
+            y: self.y[line_index],
+            column_count: self.column_count[line_index],
+            fold_column_index: self.fold_column_index[line_index],
+            fold_scale: self.fold_scale[line_index],
+            text: &document.history.as_text().as_lines()[line_index],
+            inlays: &document.inline_inlays[line_index],
+            wrap_byte_indices: &self.wrap_byte_indices[line_index],
+            wrap_indentation_width: self.wrap_indentation_width[line_index],
+        };
+        for element in line.wrapped_elements() {
+            match element {
+                WrappedElement::Text { text, .. } => {
+                    column_count += text.column_count(self.settings.tab_column_count);
+                }
+                WrappedElement::Widget(widget) => {
+                    column_count += widget.column_count;
+                }
+                WrappedElement::Wrap => {
+                    max_column_count = max_column_count.max(column_count);
+                    column_count = line.wrap_indentation_width;
+                }
+            }
+        }
+        self.column_count[line_index] = max_column_count.max(column_count);
+    }
+
+    fn update_wrap_data(&mut self, document: &Document, line_index: usize) {
+        self.wrap_indentation_width[line_index] = wrap::wrap(
             Line {
-                fold_position: 0,
-                fold_scale: 1.0,
-                text: &document.history.as_text().as_lines()[index],
-                inlays: &document.inline_inlays[index],
-                wrap_positions: &[],
+                y: self.y[line_index],
+                column_count: self.column_count[line_index],
+                fold_column_index: self.fold_column_index[line_index],
+                fold_scale: self.fold_scale[line_index],
+                text: &document.history.as_text().as_lines()[line_index],
+                inlays: &document.inline_inlays[line_index],
+                wrap_byte_indices: &[],
                 wrap_indentation_width: 0,
             },
             80,
-            4,
-            &mut self.wrap_positions[index],
+            self.settings.tab_column_count,
+            &mut self.wrap_byte_indices[line_index],
         );
+        self.y.truncate(line_index + 1);
+        self.update_column_count(document, line_index);
     }
 
     fn update_after_text_modified(

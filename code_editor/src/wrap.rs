@@ -1,35 +1,32 @@
 use crate::{
-    char::CharExt,
     layout::{InlineElement, Line},
     str::StrExt,
 };
 
 pub fn wrap(
     line: Line<'_>,
-    max_width: usize,
-    tab_width: usize,
+    max_column_count: usize,
+    tab_column_count: usize,
     positions: &mut Vec<usize>,
 ) -> usize {
     let mut indentation_width: usize = line
         .text
-        .indentation()
+        .leading_whitespace()
         .unwrap_or("")
-        .chars()
-        .map(|char| char.width(tab_width))
-        .sum();
+        .column_count(tab_column_count);
     for inline in line.inline_elements() {
         match inline {
             InlineElement::Text { text, .. } => {
                 for string in text.split_whitespace_boundaries() {
-                    let width: usize = string.chars().map(|char| char.width(tab_width)).sum();
-                    if indentation_width + width > max_width {
+                    let column_count: usize = string.column_count(tab_column_count);
+                    if indentation_width + column_count > max_column_count {
                         indentation_width = 0;
                         break;
                     }
                 }
             }
             InlineElement::Widget(widget) => {
-                if indentation_width + widget.width > max_width {
+                if indentation_width + widget.column_count > max_column_count {
                     indentation_width = 0;
                     break;
                 }
@@ -37,26 +34,26 @@ pub fn wrap(
         }
     }
     let mut position = 0;
-    let mut total_width = 0;
+    let mut column_index = 0;
     for element in line.inline_elements() {
         match element {
             InlineElement::Text { text, .. } => {
                 for string in text.split_whitespace_boundaries() {
-                    let width: usize = string.chars().map(|char| char.width(tab_width)).sum();
-                    if total_width + width > max_width {
-                        total_width = indentation_width;
+                    let column_count: usize = string.column_count(tab_column_count);
+                    if column_index + column_count > max_column_count {
+                        column_index = indentation_width;
                         positions.push(position);
                     }
-                    total_width += width;
+                    column_index += column_count;
                     position += string.len();
                 }
             }
             InlineElement::Widget(widget) => {
-                if total_width + widget.width > max_width {
-                    total_width = indentation_width;
+                if column_index + widget.column_count > max_column_count {
+                    column_index = indentation_width;
                     positions.push(position);
                 }
-                total_width += widget.width;
+                column_index += widget.column_count;
                 position += 1;
             }
         }
