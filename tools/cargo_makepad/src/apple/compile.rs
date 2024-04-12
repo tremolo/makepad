@@ -380,14 +380,17 @@ pub fn run_on_sim(apple_args: AppleArgs, args: &[String], apple_target: AppleTar
         return Err("Please set --org=org --app=app on the commandline inbetween ios and run-sim.".to_string());
     }
     
-    let result = build(apple_args.stable, &apple_args.org.unwrap_or("orgname".to_string()), &apple_args.app.unwrap_or("productname".to_string()), args, apple_target) ?;
-    
+    let build_crate = get_build_crate_from_args(args) ?;
+    let result = build(&apple_args.org.unwrap_or("orgname".to_string()), &apple_args.app.unwrap_or("productname".to_string()), args, apple_target) ?;
+    let app_dir = result.app_dir.into_os_string().into_string().unwrap();
+    copy_resources(Path::new(&app_dir), build_crate, &result.build_dir, apple_target) ?;
+ 
     let cwd = std::env::current_dir().unwrap();
     shell_env(&[], &cwd, "xcrun", &[
         "simctl",
         "install",
         "booted",
-        &result.app_dir.into_os_string().into_string().unwrap()
+        &app_dir
     ]) ?;
     
     shell_env(&[], &cwd, "xcrun", &[

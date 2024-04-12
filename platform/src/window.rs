@@ -60,7 +60,11 @@ impl CxWindowPool {
         }
         return (WindowId(0, self.0.pool[0].generation), self.0.pool[0].item.window_geom.position)
     }
-    
+   
+    pub fn is_empty(&self) -> bool {
+      self.0.pool.len() == 0
+    }    
+
     pub fn is_valid(&self, v: WindowId)->bool{
         if v.0 < self.0.pool.len(){
             if self.0.pool[v.0].generation == v.1{

@@ -161,11 +161,14 @@ impl Cx {
                 self.call_event_handler(&Event::AppLostFocus);
             }
             IosEvent::WindowGeomChange(re) => { // do this here because mac
-                let window_id = CxWindowPool::id_zero();
-                let window = &mut self.windows[window_id];
-                window.window_geom = re.new_geom.clone();
-                self.call_event_handler(&Event::WindowGeomChange(re));
-                self.redraw_all();
+                if !self.windows.is_empty() {
+                    let window_id = CxWindowPool::id_zero();
+                    let window = &mut self.windows[window_id];
+                    window.window_geom = re.new_geom.clone();
+                
+                    self.call_event_handler(&Event::WindowGeomChange(re));
+                    self.redraw_all();
+                }
             }
             IosEvent::Paint => {
                 if self.new_next_frames.len() != 0 {
