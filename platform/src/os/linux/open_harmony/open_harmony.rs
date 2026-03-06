@@ -239,6 +239,7 @@ impl Cx {
                         is_repeat: false,
                         modifiers: Default::default(),
                         time,
+                        raw_key: 0,
                     };
                     self.keyboard.process_key_down(e.clone());
                     self.call_event_handler(&Event::KeyDown(e.clone()));

@@ -9,6 +9,8 @@ pub struct KeyEvent {
     pub is_repeat: bool,
     pub modifiers: KeyModifiers,
     pub time: f64,
+    /// Raw platform key value (X11/Wayland keysym, 0 on other platforms).
+    pub raw_key: u32,
 }
 
 #[derive(Clone, Debug, PartialEq)]

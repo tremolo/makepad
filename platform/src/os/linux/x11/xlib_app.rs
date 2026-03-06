@@ -445,7 +445,7 @@ impl XlibApp {
                     if let Some(window_ptr) = self.window_map.get(&event.xkey.window) {
                         let window = &mut (**window_ptr);
                         let block_text = if event.xkey.keycode != 0 {
-                            let key_code = self.xkeyevent_to_keycode(&mut event.xkey);
+                            let (key_code, raw_key) = self.xkeyevent_to_keycode(&mut event.xkey);
                             let modifiers = self.xkeystate_to_modifiers(event.xkey.state);
 
                             if modifiers.control || modifiers.logo {
@@ -509,6 +509,7 @@ impl XlibApp {
                                 is_repeat: self.next_keypress_is_repeat,
                                 modifiers: modifiers,
                                 time: self.time_now(),
+                                raw_key,
                             }));
                             self.next_keypress_is_repeat = false;
                             block_text
@@ -563,11 +564,13 @@ impl XlibApp {
                         }
                     }
                     if !self.next_keypress_is_repeat {
+                        let (key_code, raw_key) = self.xkeyevent_to_keycode(&mut event.xkey);
                         self.do_callback(XlibEvent::KeyUp(KeyEvent {
-                            key_code: self.xkeyevent_to_keycode(&mut event.xkey),
+                            key_code,
                             is_repeat: false,
                             modifiers: self.xkeystate_to_modifiers(event.xkey.state),
                             time: self.time_now(),
+                            raw_key,
                         }));
                     }
                 }
@@ -787,12 +790,12 @@ impl XlibApp {
         }
     }
 
-    fn xkeyevent_to_keycode(&self, key_event: &mut x11_sys::XKeyEvent) -> KeyCode {
+    fn xkeyevent_to_keycode(&self, key_event: &mut x11_sys::XKeyEvent) -> (KeyCode, u32) {
         let mut keysym = 0;
         unsafe {
             x11_sys::XLookupString(key_event, ptr::null_mut(), 0, &mut keysym, ptr::null_mut());
         }
-        match keysym as u32 {
+        let key_code = match keysym as u32 {
             x11_sys::XK_a => KeyCode::KeyA,
             x11_sys::XK_A => KeyCode::KeyA,
             x11_sys::XK_b => KeyCode::KeyB,
@@ -926,7 +929,8 @@ impl XlibApp {
             x11_sys::XK_Down => KeyCode::ArrowDown,
             x11_sys::XK_Up => KeyCode::ArrowUp,
             _ => KeyCode::Unknown,
-        }
+        };
+        (key_code, keysym as u32)
     }
 
     pub unsafe fn copy_to_clipboard(&mut self, text: &String, window_id: c_ulong, time: u64) {

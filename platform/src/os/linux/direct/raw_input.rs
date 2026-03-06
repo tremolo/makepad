@@ -967,6 +967,7 @@ impl RawInput {
                             is_repeat: false,
                             modifiers: self.modifiers,
                             time,
+                            raw_key: 0,
                         }))
                     }
                 }
@@ -1005,6 +1006,7 @@ impl RawInput {
                         is_repeat: false,
                         modifiers: self.modifiers,
                         time,
+                        raw_key: 0,
                     })),
                 }
             }
@@ -1013,6 +1015,7 @@ impl RawInput {
                 is_repeat: false,
                 modifiers: self.modifiers,
                 time,
+                raw_key: 0,
             })),
         }
     }

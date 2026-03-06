@@ -1035,6 +1035,7 @@ impl HubCore {
                 auto_dump: _,
             } => {
                 let key = KeyEvent {
+                    raw_key: 0,
                     key_code: KeyCode::ReturnKey,
                     is_repeat: false,
                     modifiers: KeyModifiers::default(),

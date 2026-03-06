@@ -402,6 +402,7 @@ impl Cx {
                                 ..Default::default()
                             },
                             time: self.os.timers.time_now(),
+                            raw_key: 0,
                         });
                         self.call_event_handler(&e);
                     }
@@ -426,6 +427,7 @@ impl Cx {
                         ..Default::default()
                     },
                     time: self.os.timers.time_now(),
+                    raw_key: 0,
                 });
                 self.call_event_handler(&e);
             }
@@ -680,6 +682,7 @@ impl Cx {
                             logo: false,
                         },
                         time: self.seconds_since_app_start(),
+                        raw_key: 0,
                     });
                     self.call_event_handler(&e);
                 }

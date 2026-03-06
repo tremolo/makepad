@@ -729,11 +729,12 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for WaylandState {
                         wl_keyboard::KeyState::Pressed => {
                             state.keyboard_serial = Some(serial);
                             state.flush_pending_clipboard_copy(qhandle, serial);
-                            let (key_code, text_str) =
+                            let (key_code, text_str, raw_key) =
                                 if let Some(xkb_state) = state.xkb_state.as_mut() {
                                     (
-                                        xkb_state.keycode_to_makepad_keycode(key + 8),
+                                        crate::os::linux::wayland::xkb_sys::evdev_to_makepad_keycode(key),
                                         xkb_state.key_get_utf8(key + 8),
+                                        xkb_state.key_get_one_sym(key + 8),
                                     )
                                 } else {
                                     return;
@@ -775,6 +776,7 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for WaylandState {
                                 is_repeat: false,
                                 modifiers: state.modifiers,
                                 time: state.time_now(),
+                                raw_key,
                             }));
 
                             if !block_text && !text_str.is_empty() {
@@ -788,12 +790,14 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for WaylandState {
                         }
                         wl_keyboard::KeyState::Released => {
                             if let Some(xkb_state) = state.xkb_state.as_mut() {
-                                let key_code = xkb_state.keycode_to_makepad_keycode(key + 8);
+                                let key_code = crate::os::linux::wayland::xkb_sys::evdev_to_makepad_keycode(key);
+                                let raw_key = xkb_state.key_get_one_sym(key + 8);
                                 state.do_callback(XlibEvent::KeyUp(KeyEvent {
                                     key_code,
                                     is_repeat: false,
                                     modifiers: state.modifiers,
                                     time: state.time_now(),
+                                    raw_key,
                                 }));
                             }
                         }
