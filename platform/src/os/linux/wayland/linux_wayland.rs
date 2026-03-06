@@ -153,15 +153,32 @@ impl WaylandCx {
                     .iter_mut()
                     .find(|w| w.window_id == re.window_id)
                 {
+                    // Store pre-override compositor values in window.window_geom.
+                    // wayland_state.rs reads window.window_geom to build subsequent
+                    // WindowGeomChange events (xdg_toplevel Configure fallback and
+                    // PreferredScale clone), so it must always contain the raw
+                    // compositor geometry — not the dpi_override-adjusted values.
+                    window.window_geom = re.new_geom.clone();
+                    window.viewport_size = re.new_geom.inner_size;
+
+                    // Record the compositor's raw dpi_factor so pointer event
+                    // coordinates (reported in compositor logical space) can be
+                    // remapped to the dpi_override layout space.
+                    cx.windows[re.window_id].os_dpi_factor = Some(re.new_geom.dpi_factor);
+
+                    // Apply dpi_override to produce the app-facing layout geometry.
                     if let Some(dpi_override) = cx.windows[re.window_id].dpi_override {
                         re.new_geom.inner_size *= re.new_geom.dpi_factor / dpi_override;
                         re.new_geom.dpi_factor = dpi_override;
                     }
 
-                    window.window_geom = re.new_geom.clone();
+                    // cx.windows stores post-override geometry (what the app sees
+                    // for layout, coordinate transforms, etc.).
                     cx.windows[re.window_id].window_geom = re.new_geom.clone();
-                    // redraw just this windows root draw list
-                    if re.old_geom.inner_size != re.new_geom.inner_size {
+
+                    // Compare pre-override sizes to detect a real compositor-driven
+                    // resize (both old_geom and viewport_size are pre-override).
+                    if re.old_geom.inner_size != window.viewport_size {
                         if let Some(main_pass_id) = cx.windows[re.window_id].main_pass_id {
                             cx.redraw_pass_and_child_passes(main_pass_id);
                         }
@@ -201,31 +218,36 @@ impl WaylandCx {
 
                 self.handle_repaint(state);
             }
-            XlibEvent::MouseMove(e) => {
+            XlibEvent::MouseMove(mut e) => {
                 let mut cx = self.cx.borrow_mut();
+                e.abs = cx.windows[e.window_id].remap_dpi_override(e.abs);
                 cx.call_event_handler(&Event::MouseMove(e.into()));
                 cx.fingers.cycle_hover_area(live_id!(mouse).into());
                 cx.fingers.switch_captures();
             }
-            XlibEvent::MouseDown(e) => {
+            XlibEvent::MouseDown(mut e) => {
                 let mut cx = self.cx.borrow_mut();
+                e.abs = cx.windows[e.window_id].remap_dpi_override(e.abs);
                 cx.fingers.process_tap_count(e.abs, e.time);
                 cx.fingers.mouse_down(e.button, e.window_id);
                 cx.call_event_handler(&Event::MouseDown(e.into()))
             }
-            XlibEvent::MouseUp(e) => {
+            XlibEvent::MouseUp(mut e) => {
                 let mut cx = self.cx.borrow_mut();
+                e.abs = cx.windows[e.window_id].remap_dpi_override(e.abs);
                 let button = e.button;
                 cx.call_event_handler(&Event::MouseUp(e.into()));
                 cx.fingers.mouse_up(button);
                 cx.fingers.cycle_hover_area(live_id!(mouse).into());
             }
-            XlibEvent::Scroll(e) => {
+            XlibEvent::Scroll(mut e) => {
                 let mut cx = self.cx.borrow_mut();
+                e.abs = cx.windows[e.window_id].remap_dpi_override(e.abs);
                 cx.call_event_handler(&Event::Scroll(e.into()))
             }
-            XlibEvent::WindowDragQuery(e) => {
+            XlibEvent::WindowDragQuery(mut e) => {
                 let mut cx = self.cx.borrow_mut();
+                e.abs = cx.windows[e.window_id].remap_dpi_override(e.abs);
                 cx.call_event_handler(&Event::WindowDragQuery(e))
             }
             XlibEvent::WindowCloseRequested(e) => {
@@ -648,9 +670,12 @@ impl WaylandCx {
                         }
                         if let Some(viewport) = window.viewport.as_ref() {
                             viewport.set_source(-1., -1., -1., -1.);
+                            // Use viewport_size (pre-dpi_override inner_size) so the
+                            // compositor sees the correct logical surface dimensions and
+                            // the physical window size on screen is unchanged by dpi_override.
                             viewport.set_destination(
-                                window.window_geom.inner_size.x as i32,
-                                window.window_geom.inner_size.y as i32,
+                                window.viewport_size.x as i32,
+                                window.viewport_size.y as i32,
                             );
                         }
                         let pix_width =

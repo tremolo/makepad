@@ -35,6 +35,12 @@ pub(crate) struct WaylandWindow {
     pub fractional_scale: Option<wp_fractional_scale_v1::WpFractionalScaleV1>,
     pub configured: bool,
     pub window_geom: WindowGeom,
+    /// The logical surface size to report to the Wayland compositor via
+    /// `wp_viewport::set_destination`. This is the pre-dpi_override inner_size
+    /// (i.e. the physical pixel count divided by the compositor's scale factor).
+    /// It must not be affected by dpi_override, which only changes Makepad's
+    /// internal layout coordinate space.
+    pub viewport_size: Vec2d,
     pub cal_size: Vec2d,
     pub wl_egl_surface: WlEglSurface,
     pub egl_surface: EGLSurface,
@@ -120,6 +126,7 @@ impl WaylandWindow {
             xdg_surface: shell_surface,
             window_id,
             cal_size: Vec2d::default(),
+            viewport_size: inner_size,
             window_geom: geom,
             wl_egl_surface,
             egl_surface,
