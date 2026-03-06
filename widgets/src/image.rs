@@ -22,13 +22,20 @@ script_mod! {
         image_scale: vec2(1.0, 1.0)
         image_pan: vec2(0.0, 0.0)
         async_load: 0.0
+        chroma: 0.0
 
         get_color_scale_pan: fn(scale: vec2, pan: vec2) {
             return self.image_texture.sample_as_bgra(self.pos * scale + pan)
         }
 
         get_color: fn() {
-            return self.get_color_scale_pan(self.image_scale, self.image_pan)
+            let s = self.image_scale
+            let p = self.image_pan
+            let off = self.chroma
+            let cr = self.image_texture.sample_as_bgra(self.pos * s + p + vec2(-off, 0.0))
+            let cg = self.image_texture.sample_as_bgra(self.pos * s + p)
+            let cb = self.image_texture.sample_as_bgra(self.pos * s + p + vec2(off, 0.0))
+            return vec4(cr.x, cg.y, cb.z, cg.w)
         }
 
         pixel: fn() {
@@ -58,6 +65,8 @@ pub struct DrawImage {
     pub image_pan: Vec2f,
     #[live]
     async_load: f32,
+    #[live]
+    pub chroma: f32,
 }
 
 #[derive(Copy, Clone, Debug, Default, Script, ScriptHook)]
