@@ -946,20 +946,39 @@ pub fn expand_sdk(
             println!("4/5: Unzipping: {} (full NDK)", url_file_name);
             let ndk_out_path = sdk_dir.join(NDK_OUT);
             mkdir(&ndk_out_path)?;
-            shell(
-                &cwd,
-                "unzip",
-                &[
-                    "-q", // quiet
-                    "-o", // overwrite existing files
-                    src_dir.join(url_file_name).to_str().unwrap(),
-                    &format!("{NDK_IN}/*"),
-                    &format!("{NDK_IN}/**/*"), // `*` alone doesn't match `/` on some Linux unzip builds
-                    "-d",
-                    src_dir.to_str().unwrap(),
-                ],
-            )
-            .unwrap();
+            // Only unzip if the NDK hasn't been extracted yet.
+            // Linux unzip doesn't support ** globs, so we extract the whole zip
+            // and rely on the cp step to pick up just the prebuilt directory.
+            let ndk_src = src_dir.join(NDK_IN);
+            if !ndk_src.exists() {
+                // Try pattern-based extraction first (works on some Linux builds);
+                // fall back to extracting the entire zip if the pattern is unsupported.
+                let ok = shell(
+                    &cwd,
+                    "unzip",
+                    &[
+                        "-q",
+                        "-o",
+                        src_dir.join(url_file_name).to_str().unwrap(),
+                        &format!("{NDK_IN}/*"),
+                        "-d",
+                        src_dir.to_str().unwrap(),
+                    ],
+                ).is_ok() && ndk_src.exists();
+                if !ok {
+                    shell(
+                        &cwd,
+                        "unzip",
+                        &[
+                            "-q",
+                            "-o",
+                            src_dir.join(url_file_name).to_str().unwrap(),
+                            "-d",
+                            src_dir.to_str().unwrap(),
+                        ],
+                    ).map_err(|e| format!("Failed to extract NDK: {}", e))?;
+                }
+            }
             shell(
                 &cwd,
                 "cp",
@@ -971,7 +990,7 @@ pub fn expand_sdk(
                     ndk_out_path.parent().unwrap().to_str().unwrap(),
                 ],
             )
-            .unwrap();
+            .map_err(|e| format!("Failed to copy NDK prebuilts: {}", e))?;
 
             const JDK_IN: &str = "jdk-17.0.2";
             const JDK_OUT: &str = "openjdk";
