@@ -1001,8 +1001,8 @@ impl XlibApp {
             x11_sys::XK_Control_L => KeyCode::Control,
             x11_sys::XK_Control_R => KeyCode::Control,
 
-            x11_sys::XK_equal => KeyCode::Equals,
-            x11_sys::XK_minus => KeyCode::Minus,
+            x11_sys::XK_equal | x11_sys::XK_plus | x11_sys::XK_asterisk => KeyCode::Equals,
+            x11_sys::XK_minus | x11_sys::XK_underscore => KeyCode::Minus,
             x11_sys::XK_bracketright => KeyCode::RBracket,
             x11_sys::XK_bracketleft => KeyCode::LBracket,
             x11_sys::XK_Return => KeyCode::ReturnKey,

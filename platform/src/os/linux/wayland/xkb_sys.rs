@@ -517,8 +517,8 @@ pub fn xkb_keysym_to_keycode(keysym: xkb_keysym_t) -> crate::event::keyboard::Ke
         XKB_KEY_Shift_L | XKB_KEY_Shift_R => KeyCode::Shift,
         XKB_KEY_Control_L | XKB_KEY_Control_R => KeyCode::Control,
 
-        XKB_KEY_equal => KeyCode::Equals,
-        XKB_KEY_minus => KeyCode::Minus,
+        XKB_KEY_equal | XKB_KEY_plus | XKB_KEY_asterisk => KeyCode::Equals,
+        XKB_KEY_minus | XKB_KEY_underscore => KeyCode::Minus,
         XKB_KEY_bracketright => KeyCode::RBracket,
         XKB_KEY_bracketleft => KeyCode::LBracket,
         XKB_KEY_Return => KeyCode::ReturnKey,
