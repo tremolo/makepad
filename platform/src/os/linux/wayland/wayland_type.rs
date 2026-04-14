@@ -29,8 +29,10 @@ impl Into<wp_cursor_shape_device_v1::Shape> for MouseCursor {
             MouseCursor::NeswResize => wp_cursor_shape_device_v1::Shape::NeswResize,
             MouseCursor::EwResize => wp_cursor_shape_device_v1::Shape::EwResize,
             MouseCursor::NwseResize => wp_cursor_shape_device_v1::Shape::NwseResize,
-            MouseCursor::ColResize => wp_cursor_shape_device_v1::Shape::ColResize,
-            MouseCursor::RowResize => wp_cursor_shape_device_v1::Shape::RowResize,
+            // GNOME Wayland appears to present more reliable visible resize cursors
+            // for the generic axis-resize shapes than for the split-specific variants.
+            MouseCursor::ColResize => wp_cursor_shape_device_v1::Shape::EwResize,
+            MouseCursor::RowResize => wp_cursor_shape_device_v1::Shape::NsResize,
         }
     }
 }

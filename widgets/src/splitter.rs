@@ -254,6 +254,9 @@ impl Widget for Splitter {
             self.draw_bg.redraw(cx);
         }
 
+        self.a.handle_event(cx, event, scope);
+        self.b.handle_event(cx, event, scope);
+
         match event.hits_with_options(
             cx,
             self.draw_bg.area(),
@@ -334,8 +337,6 @@ impl Widget for Splitter {
             }
             _ => {}
         }
-        self.a.handle_event(cx, event, scope);
-        self.b.handle_event(cx, event, scope);
     }
 
     fn draw_walk(&mut self, cx: &mut Cx2d, scope: &mut Scope, walk: Walk) -> DrawStep {
