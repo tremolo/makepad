@@ -54,6 +54,8 @@ pub struct KeyboardView {
     #[live]
     keyboard_resize: bool,
     #[rust]
+    ignore_keyboard_shift: bool,
+    #[rust]
     next_frame: NextFrame,
 
     /// Current vertical scroll offset applied to the inner content (Makepad layout points).
@@ -113,6 +115,9 @@ impl KeyboardView {
     /// the surface to make room for the IME, or when there is no settled rect
     /// yet for `self.area`.
     fn compute_target_shift(&self, keyboard_height: f64, cx: &Cx) -> f64 {
+        if self.ignore_keyboard_shift {
+            return 0.0;
+        }
         if keyboard_height <= 0.0 {
             return 0.0;
         }
@@ -147,6 +152,19 @@ impl KeyboardView {
     fn set_keyboard_shift(&mut self, cx: &mut Cx, shift: f64) {
         self.keyboard_shift = shift.max(0.0);
         cx.keyboard_shift = if self.keyboard_resize { 0.0 } else { self.keyboard_shift };
+    }
+
+    pub fn set_ignore_keyboard_shift(&mut self, cx: &mut Cx, ignore_keyboard_shift: bool) {
+        if self.ignore_keyboard_shift == ignore_keyboard_shift {
+            return;
+        }
+
+        self.ignore_keyboard_shift = ignore_keyboard_shift;
+        if ignore_keyboard_shift && self.keyboard_shift != 0.0 {
+            self.set_keyboard_shift(cx, 0.0);
+            self.anim_state = AnimState::Closed;
+            self.redraw(cx);
+        }
     }
 
     fn animate_to_shift(
@@ -378,8 +396,7 @@ impl Widget for KeyboardView {
             // blink redraws the KeyboardView but not the field). A genuine
             // field move always redraws the field, so this never misses one.
             if cx.get_ime_area_rect().size.y > 0.0 {
-                let height_changed = (self.keyboard_height
-                    - self.last_reconciled_keyboard_height)
+                let height_changed = (self.keyboard_height - self.last_reconciled_keyboard_height)
                     .abs()
                     > KEYBOARD_SHIFT_EPSILON;
                 self.last_reconciled_keyboard_height = self.keyboard_height;

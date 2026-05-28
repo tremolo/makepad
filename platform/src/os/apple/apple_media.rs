@@ -340,7 +340,10 @@ impl CxMediaApi for Cx {
         let Some(av_capture) = self.os.media.av_capture.as_ref() else {
             return;
         };
-        av_capture.lock().unwrap().video_encoder_push_frame(index, frame);
+        av_capture
+            .lock()
+            .unwrap()
+            .video_encoder_push_frame(index, frame);
     }
 
     fn video_encoder_capture_texture_frame(
@@ -365,7 +368,10 @@ impl CxMediaApi for Cx {
         let Some(av_capture) = self.os.media.av_capture.as_ref() else {
             return Err(VideoEncodeError::EncoderNotStarted);
         };
-        av_capture.lock().unwrap().video_encoder_request_keyframe(index)
+        av_capture
+            .lock()
+            .unwrap()
+            .video_encoder_request_keyframe(index)
     }
 
     fn video_capabilities(&self) -> VideoCapabilities {
