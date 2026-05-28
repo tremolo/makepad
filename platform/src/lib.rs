@@ -217,7 +217,6 @@ pub use {
             BackGestureState,
             CancelScope,
             CancelScopeKind,
-            AndroidWindowInsetsEvent,
             CharOffset,
             DigitDevice,
             DragEvent,
