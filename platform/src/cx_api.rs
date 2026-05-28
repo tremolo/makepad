@@ -30,11 +30,18 @@ use {
     },
     std::{
         any::{Any, TypeId},
+        cell::Cell,
         collections::VecDeque,
         ops::Range,
         rc::Rc,
+        time::Instant,
     },
 };
+
+thread_local! {
+    static APP_TIME_OVERRIDE_SECS: Cell<Option<f64>> = const { Cell::new(None) };
+}
+
 pub enum OpenUrlInPlace {
     Yes,
     No,
@@ -367,6 +374,8 @@ pub enum CxOsOp {
     },
     HideClipboardActions,
     CopyToClipboard(String),
+    #[cfg(target_os = "android")]
+    PasteFromClipboard,
     SetPrimarySelection(String),
     ShowSelectionHandles {
         start: Vec2d,
@@ -534,6 +543,8 @@ impl std::fmt::Debug for CxOsOp {
             Self::ShowClipboardActions { .. } => write!(f, "ShowClipboardActions"),
             Self::HideClipboardActions => write!(f, "HideClipboardActions"),
             Self::CopyToClipboard(..) => write!(f, "CopyToClipboard"),
+            #[cfg(target_os = "android")]
+            Self::PasteFromClipboard => write!(f, "PasteFromClipboard"),
             Self::SetPrimarySelection(..) => write!(f, "SetPrimarySelection"),
             Self::ShowSelectionHandles { .. } => write!(f, "ShowSelectionHandles"),
             Self::UpdateSelectionHandles { .. } => write!(f, "UpdateSelectionHandles"),
@@ -654,6 +665,43 @@ impl Cx {
 }
 
 impl Cx {
+    pub fn global_app_time_override_secs() -> Option<f64> {
+        APP_TIME_OVERRIDE_SECS.with(Cell::get)
+    }
+
+    pub(crate) fn effective_app_time_for_start_time(start_time: Option<Instant>) -> f64 {
+        if let Some(override_secs) = Self::global_app_time_override_secs() {
+            return override_secs;
+        }
+        start_time
+            .map(|start_time| Instant::now().duration_since(start_time).as_secs_f64())
+            .unwrap_or_default()
+    }
+
+    pub fn app_time_override_secs(&self) -> Option<f64> {
+        Self::global_app_time_override_secs()
+    }
+
+    pub fn set_app_time_override_secs(&mut self, override_secs: Option<f64>) {
+        let sanitized = override_secs.filter(|secs| secs.is_finite() && *secs >= 0.0);
+        APP_TIME_OVERRIDE_SECS.with(|cell| cell.set(sanitized));
+    }
+
+    pub fn clear_app_time_override_secs(&mut self) {
+        self.set_app_time_override_secs(None);
+    }
+
+    pub fn current_app_time_secs(&self) -> f64 {
+        #[cfg(target_os = "android")]
+        {
+            Self::effective_app_time_for_start_time(Some(self.os.start_time))
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            Self::effective_app_time_for_start_time(self.os.start_time)
+        }
+    }
+
     pub fn in_draw_event(&self) -> bool {
         self.in_draw_event
     }
@@ -1532,6 +1580,12 @@ impl Cx {
         if self.script_data.std.host_io_only() { return; }
         self.platform_ops
             .push_back(CxOsOp::CopyToClipboard(content.to_owned()));
+    }
+
+    /// Requests a paste from the platform clipboard.
+    pub fn paste_from_clipboard(&mut self) {
+        #[cfg(target_os = "android")]
+        self.platform_ops.push_back(CxOsOp::PasteFromClipboard);
     }
 
     /// Sets the primary selection (Linux middle-click paste).

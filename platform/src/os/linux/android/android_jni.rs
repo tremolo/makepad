@@ -2577,3 +2577,28 @@ pub unsafe fn to_java_update_ime_text_state(
 
     (**env).DeleteLocalRef.unwrap()(env, text_jstr);
 }
+
+/// mpmux extension hook: start the Android QR scanner when the app-specific
+/// activity implementation provides it. The upstream Makepad checkout does not
+/// ship this method, so keep this hook present for mpmux builds.
+pub unsafe fn to_java_start_mpmux_qr_scanner() {
+    let env = attach_jni_env();
+    ndk_utils::call_void_method!(env, get_activity(), "startMpmuxQrScanner", "()V");
+}
+
+/// mpmux extension hook: ask the Android activity to check for an APK update
+/// manifest. The Java side owns user-visible errors and update validation.
+pub unsafe fn to_java_check_mpmux_self_update(manifest_url: &str) -> Result<(), String> {
+    let env = attach_jni_env();
+    let manifest_url = CString::new(manifest_url)
+        .map_err(|err| format!("invalid update manifest URL string: {err}"))?;
+    let manifest_url = ((**env).NewStringUTF.unwrap())(env, manifest_url.as_ptr());
+    ndk_utils::call_void_method!(
+        env,
+        get_activity(),
+        "checkMpmuxSelfUpdate",
+        "(Ljava/lang/String;)V",
+        manifest_url
+    );
+    Ok(())
+}

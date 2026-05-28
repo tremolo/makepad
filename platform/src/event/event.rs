@@ -162,6 +162,7 @@ pub enum Event {
     WindowClosed(WindowClosedEvent),
     PopupDismissed(PopupDismissedEvent),
     WindowGeomChange(WindowGeomChangeEvent),
+    AndroidWindowInsets(AndroidWindowInsetsEvent),
     VirtualKeyboard(VirtualKeyboardEvent),
     ClearAtlasses,
     /// Clear all hover/pressed visual state, e.g. after an overlay that
@@ -383,6 +384,7 @@ impl Event {
             61 => "PopupDismissed",
             62 => "SelectionHandleDrag",
             66 => "ScriptReapply",
+            68 => "AndroidWindowInsets",
             69 => "LocationUpdate",
             70 => "LocationError",
             _ => panic!(),
@@ -413,6 +415,7 @@ impl Event {
             Self::WindowCloseRequested(_) => 15,
             Self::WindowClosed(_) => 16,
             Self::WindowGeomChange(_) => 17,
+            Self::AndroidWindowInsets(_) => 68,
             Self::VirtualKeyboard(_) => 18,
             Self::ClearAtlasses => 19,
             Self::ClearHover => 72,
@@ -1102,6 +1105,28 @@ pub enum VirtualKeyboardEvent {
     DidHide {
         time: f64,
     },
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AndroidWindowInsetsEvent {
+    pub window_left: f64,
+    pub window_top: f64,
+    pub window_right: f64,
+    pub window_bottom: f64,
+    pub surface_width: f64,
+    pub surface_height: f64,
+    pub surface_origin_x: f64,
+    pub surface_origin_y: f64,
+    pub usable_left: f64,
+    pub usable_top: f64,
+    pub usable_right: f64,
+    pub usable_bottom: f64,
+    pub system_top: f64,
+    pub system_right: f64,
+    pub system_bottom: f64,
+    pub system_left: f64,
+    pub ime_bottom: f64,
+    pub ime_visible: bool,
 }
 
 #[derive(Clone, Default, Debug)]

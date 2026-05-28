@@ -275,6 +275,7 @@ struct BuildPaths {
     manifest_file: PathBuf,
     java_file: PathBuf,
     xr_file: PathBuf,
+    app_java_dir: PathBuf,
     dst_unaligned_apk: PathBuf,
     dst_apk: PathBuf,
 }
@@ -809,7 +810,11 @@ fn rust_build(
 /// prebuilt copy of that library is only 4 KB-page aligned, which fails Google
 /// Play's 16 KB page-size requirement for apps targeting Android 15+. Static
 /// `std` keeps the app a single self-contained, NDK-linked (16 KB-aligned) `.so`.
-fn compose_android_rustflags(existing: Option<&str>, cfg_flag: &str, prefer_dynamic: bool) -> String {
+fn compose_android_rustflags(
+    existing: Option<&str>,
+    cfg_flag: &str,
+    prefer_dynamic: bool,
+) -> String {
     let mut rustflags = existing.unwrap_or_default().trim().to_string();
     if prefer_dynamic {
         let has_prefer_dynamic = rustflags
@@ -1091,6 +1096,10 @@ fn prepare_build(opts: &PrepareBuildOpts<'_>) -> Result<BuildPaths, String> {
         version_code: opts.version_code,
         version_name: opts.version_name,
         debuggable: opts.debuggable,
+        app_manifest_application_xml: &fs::read_to_string(
+            build_crate_dir.join("resources/android/AndroidManifest.application.xml"),
+        )
+        .unwrap_or_default(),
     };
 
     // Custom manifest override: if `<crate>/resources/android/AndroidManifest.xml.template`
@@ -1136,6 +1145,7 @@ fn prepare_build(opts: &PrepareBuildOpts<'_>) -> Result<BuildPaths, String> {
         manifest_file,
         java_file,
         xr_file,
+        app_java_dir: build_crate_dir.join("resources/android/java"),
         dst_unaligned_apk,
         dst_apk,
     })
@@ -1174,6 +1184,26 @@ fn build_r_class(
     Ok(())
 }
 
+fn collect_java_sources(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+    if !dir.is_dir() {
+        return Ok(());
+    }
+    let mut entries = fs::read_dir(dir)
+        .map_err(|e| format!("failed to read app Android Java dir {:?}: {e}", dir))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("failed to read app Android Java dir {:?}: {e}", dir))?;
+    entries.sort_by_key(|entry| entry.path());
+    for entry in entries {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_java_sources(&path, out)?;
+        } else if path.extension().is_some_and(|ext| ext == "java") {
+            out.push(path);
+        }
+    }
+    Ok(())
+}
+
 fn compile_java(
     sdk_dir: &Path,
     build_paths: &BuildPaths,
@@ -1192,7 +1222,7 @@ fn compile_java(
     let makepad_java_classes_dir = &cargo_manifest_dir
         .join("src/android/java/")
         .join(makepad_package_path);
-    let java_sources = vec![
+    let mut java_sources = vec![
         r_class_path.clone(),
         makepad_java_classes_dir.join("MakepadNative.java"),
         makepad_java_classes_dir.join("MakepadActivity.java"),
@@ -1210,6 +1240,7 @@ fn compile_java(
         build_paths.java_file.clone(),
         build_paths.xr_file.clone(),
     ];
+    collect_java_sources(&build_paths.app_java_dir, &mut java_sources)?;
 
     let mut hasher = DefaultHasher::new();
     for source in &java_sources {
@@ -3283,7 +3314,11 @@ default via 192.168.0.1 dev wlan0 proto dhcp src 192.168.0.42 metric 303\n\
     #[test]
     fn compose_android_rustflags_preserves_existing_flags() {
         assert_eq!(
-            compose_android_rustflags(Some("-C debuginfo=1"), "--cfg android_target=\"aarch64\"", true),
+            compose_android_rustflags(
+                Some("-C debuginfo=1"),
+                "--cfg android_target=\"aarch64\"",
+                true
+            ),
             "-C debuginfo=1 -C prefer-dynamic --cfg android_target=\"aarch64\""
         );
     }
