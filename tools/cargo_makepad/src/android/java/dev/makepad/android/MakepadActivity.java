@@ -80,6 +80,52 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Set;
+import android.app.AlertDialog;
+import android.app.DownloadManager;
+import android.content.BroadcastReceiver;
+import android.content.IntentFilter;
+import android.content.SharedPreferences;
+import android.content.pm.PackageInfo;
+import android.content.pm.Signature;
+import android.database.Cursor;
+import android.graphics.ImageFormat;
+import android.graphics.Paint;
+import android.graphics.Point;
+import android.net.Uri;
+import android.os.Environment;
+import android.os.ParcelFileDescriptor;
+import android.provider.Settings;
+import android.util.SparseArray;
+import android.view.Gravity;
+import android.widget.TextView;
+import java.lang.reflect.Method;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.ByteBuffer;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.security.MessageDigest;
+import java.util.EnumMap;
+import java.util.EnumSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import org.json.JSONObject;
+import com.google.zxing.BarcodeFormat;
+import com.google.zxing.BinaryBitmap;
+import com.google.zxing.DecodeHintType;
+import com.google.zxing.LuminanceSource;
+import com.google.zxing.MultiFormatReader;
+import com.google.zxing.NotFoundException;
+import com.google.zxing.PlanarYUVLuminanceSource;
+import com.google.zxing.Result;
+import com.google.zxing.ResultPoint;
+import com.google.zxing.common.HybridBinarizer;
 import java.util.concurrent.CompletableFuture;
 
 // note: //% is a special miniquad's pre-processor for plugins
@@ -1008,6 +1054,12 @@ public class MakepadActivity
     implements MidiManager.OnDeviceOpenedListener
 {
     private static final String LOG_TAG = "Makepad";
+    private static final String MPMUX_DEFAULT_UPDATE_MANIFEST_URL = "https://mightypainting.dev/mpmux/android/latest.json";
+    private static final String MPMUX_UPDATE_PREFS = "mpmux-update";
+    private static final String MPMUX_UPDATE_PREF_DOWNLOAD_ID = "download_id";
+    private static final String MPMUX_UPDATE_PREF_SHA256 = "sha256";
+    private static final String MPMUX_UPDATE_PREF_VERSION_LABEL = "version_label";
+    private static final long MPMUX_STARTUP_UPDATE_CHECK_DELAY_MS = 2500;
     private static final long SURFACE_COVER_FADE_OUT_MS = 100;
     private static final long WARM_RESUME_SNAPSHOT_MAX_AGE_MS = 10000;
     private static final int TASK_DESCRIPTION_BACKGROUND_COLOR = 0xFFF5F7FA;
@@ -1021,6 +1073,12 @@ public class MakepadActivity
     private InputManager mInputManager;
     private InputManager.InputDeviceListener mInputDeviceListener;
     private Boolean mPhysicalKeyboardConnected;
+    private boolean mIsResumed = false;
+    private BroadcastReceiver mMpmuxUpdateDownloadReceiver;
+    private long mMpmuxUpdateDownloadId = -1;
+    private String mMpmuxUpdateExpectedSha256;
+    private String mMpmuxUpdateVersionLabel;
+    private boolean mMpmuxStartupUpdateCheckScheduled = false;
 
     // video playback
     Handler mVideoPlaybackHandler;
@@ -1057,6 +1115,33 @@ public class MakepadActivity
     private ImageView mSurfaceSnapshotOverlay;
     private FrameLayout mCameraPreviewOverlay;
     private HashMap<Long, CameraPreviewSurface> mCameraPreviewViews = new HashMap<>();
+    private FrameLayout mMpmuxQrScannerOverlay;
+    private SurfaceView mMpmuxQrScannerPreview;
+    private View mMpmuxQrScannerResultOverlay;
+    private android.hardware.Camera mMpmuxQrScannerCamera;
+    private boolean mMpmuxQrScannerActive = false;
+    private boolean mMpmuxQrScannerFound = false;
+    private boolean mMpmuxQrScannerPairingNotificationPending = false;
+    private ResultPoint[] mMpmuxQrScannerResultPoints;
+    private int mMpmuxQrScannerResultWidth;
+    private int mMpmuxQrScannerResultHeight;
+    private final Runnable mMpmuxQrScannerAutofocus = new Runnable() {
+        @Override
+        public void run() {
+            if (!mMpmuxQrScannerActive || mMpmuxQrScannerCamera == null) {
+                return;
+            }
+            try {
+                mMpmuxQrScannerCamera.autoFocus((success, camera) -> {
+                    if (mMpmuxQrScannerActive) {
+                        mHandler.postDelayed(mMpmuxQrScannerAutofocus, 1200);
+                    }
+                });
+            } catch (RuntimeException err) {
+                mHandler.postDelayed(mMpmuxQrScannerAutofocus, 1500);
+            }
+        }
+    };
     private Bitmap mLatestSurfaceSnapshot;
     private int mLatestSurfaceSnapshotOrientation = android.content.res.Configuration.ORIENTATION_UNDEFINED;
     private boolean mSurfaceSnapshotCopyInFlight = false;
@@ -1331,6 +1416,7 @@ public class MakepadActivity
         restoreWarmResumeSurfaceSnapshotIfAvailable();
         updateTaskDescription();
 
+        persistMpmuxPairingIntent(getIntent(), false);
         MakepadNative.activityOnCreate(this);
         registerPhysicalKeyboardListener();
 
@@ -1372,15 +1458,20 @@ public class MakepadActivity
     @Override
     protected void onResume() {
         super.onResume();
+        mIsResumed = true;
         restoreSurfaceViewForWarmResumeIfNeeded();
         updateTaskDescription();
         MakepadNative.activityOnResume();
         reportPhysicalKeyboardIfChanged();
+        resumePendingMpmuxUpdateDownload();
+        scheduleMpmuxStartupUpdateCheck();
 
         //% MAIN_ACTIVITY_ON_RESUME
     }
     @Override
     protected void onPause() {
+        mIsResumed = false;
+        stopMpmuxQrScanner();
         prepareSurfaceSnapshotOverlayForPause();
         super.onPause();
         MakepadNative.activityOnPause();
@@ -1397,6 +1488,8 @@ public class MakepadActivity
     @Override
     protected void onDestroy() {
         unregisterPhysicalKeyboardListener();
+        stopMpmuxQrScanner();
+        clearMpmuxUpdateDownloadReceiver();
         if (mCameraPreviewOverlay != null) {
             for (Long videoId : mCameraPreviewViews.keySet()) {
                 MakepadNative.onCameraPreviewSurfaceDestroyed(videoId);
@@ -1466,6 +1559,10 @@ public class MakepadActivity
     public void onBackPressed() {
         // Navigation is handled asynchronously by the Makepad UI. The superclass
         // would finish/background this activity before that UI can dismiss an overlay.
+        if (mMpmuxQrScannerActive) {
+            stopMpmuxQrScanner();
+            return;
+        }
         MakepadNative.onBackPressed();
     }
 
@@ -1485,6 +1582,7 @@ public class MakepadActivity
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
+        persistMpmuxPairingIntent(intent, true);
         restoreSurfaceViewForWarmResumeIfNeeded();
     }
 
@@ -3125,13 +3223,981 @@ public class MakepadActivity
     
     
 
-    public void startMpmuxQrScanner() {
-        Toast.makeText(this, "QR scanner is unavailable in this Makepad build", Toast.LENGTH_LONG).show();
+    private void persistMpmuxPairingIntent(Intent intent, boolean notifyNative) {
+        if (intent == null || intent.getData() == null) {
+            return;
+        }
+        String data = intent.getDataString();
+        if (handleMpmuxUpdateUrl(data)) {
+            return;
+        }
+        persistMpmuxPairingUrl(data, notifyNative);
     }
 
-    public void checkMpmuxSelfUpdate(String manifestUrl) {
-        Toast.makeText(this, "Update check is unavailable in this Makepad build", Toast.LENGTH_LONG).show();
+    private void persistMpmuxPairingUrl(String data, boolean notifyNative) {
+        if (data == null || !(data.startsWith("mpmux://sessiond-pair?") || data.startsWith("mpmux://pair?"))) {
+            return;
+        }
+        try {
+            writeMpmuxPairingUrl(new File(getFilesDir(), "mpmux-android-sessiond-pairing-url.txt"), data);
+            writeMpmuxPairingUrl(new File(getCacheDir(), "mpmux-android-sessiond-pairing-url.txt"), data);
+            if (notifyNative) {
+                notifyMpmuxPairingSubmitted();
+                MakepadNative.onAndroidIntentUrl(data);
+            }
+        } catch (IOException err) {
+            Log.w("Makepad", "failed to persist mpmux pairing intent", err);
+        }
     }
+
+    private void writeMpmuxPairingUrl(File file, String data) throws IOException {
+        try (FileWriter writer = new FileWriter(file, false)) {
+            writer.write(data);
+            writer.write("\n");
+        }
+    }
+
+    private void notifyMpmuxPairingSubmitted() {
+        runOnUiThread(() -> {
+            Toast.makeText(this, "Pairing request sent. Connecting may take a few seconds…", Toast.LENGTH_LONG).show();
+            mMpmuxQrScannerPairingNotificationPending = true;
+            mHandler.postDelayed(() -> {
+                if (mMpmuxQrScannerPairingNotificationPending) {
+                    Toast.makeText(this, "Still connecting… waiting for the session host", Toast.LENGTH_LONG).show();
+                    mMpmuxQrScannerPairingNotificationPending = false;
+                }
+            }, 4500);
+        });
+    }
+
+    private void scheduleMpmuxStartupUpdateCheck() {
+        if (mMpmuxStartupUpdateCheckScheduled) {
+            return;
+        }
+        mMpmuxStartupUpdateCheckScheduled = true;
+        mHandler.postDelayed(() -> {
+            if (!mIsResumed || hasPendingMpmuxUpdateDownload()) {
+                mMpmuxStartupUpdateCheckScheduled = false;
+                return;
+            }
+            checkMpmuxSelfUpdate(MPMUX_DEFAULT_UPDATE_MANIFEST_URL, false);
+        }, MPMUX_STARTUP_UPDATE_CHECK_DELAY_MS);
+    }
+
+    private boolean hasPendingMpmuxUpdateDownload() {
+        return mMpmuxUpdateDownloadId > 0
+            || getSharedPreferences(MPMUX_UPDATE_PREFS, MODE_PRIVATE).getLong(MPMUX_UPDATE_PREF_DOWNLOAD_ID, -1) > 0;
+    }
+
+    private boolean handleMpmuxUpdateUrl(String data) {
+        if (data == null || !data.startsWith("mpmux://update?")) {
+            return false;
+        }
+        try {
+            Uri uri = Uri.parse(data);
+            String manifestUrl = uri.getQueryParameter("manifest");
+            if (manifestUrl != null && !manifestUrl.trim().isEmpty()) {
+                checkMpmuxSelfUpdate(manifestUrl.trim());
+                return true;
+            }
+
+            String apkUrl = uri.getQueryParameter("url");
+            String sha256 = uri.getQueryParameter("sha256");
+            String version = uri.getQueryParameter("version");
+            promptMpmuxSelfUpdate(apkUrl, sha256, version);
+            return true;
+        } catch (RuntimeException err) {
+            Log.w(LOG_TAG, "failed to handle mpmux update link", err);
+            Toast.makeText(this, "Invalid mpmux update link", Toast.LENGTH_LONG).show();
+            return true;
+        }
+    }
+
+    public void checkMpmuxSelfUpdate(final String manifestUrl) {
+        checkMpmuxSelfUpdate(manifestUrl, true);
+    }
+
+    private void checkMpmuxSelfUpdate(final String manifestUrl, final boolean userVisible) {
+        if (!isHttpsUrl(manifestUrl)) {
+            if (userVisible) {
+                runOnUiThread(() -> Toast.makeText(this, "Update manifest must use HTTPS", Toast.LENGTH_LONG).show());
+            }
+            return;
+        }
+
+        if (userVisible) {
+            Toast.makeText(this, "Checking for mpmux update…", Toast.LENGTH_SHORT).show();
+        }
+        new Thread(() -> {
+            try {
+                JSONObject manifest = fetchMpmuxUpdateManifest(manifestUrl);
+                String manifestPackage = manifest.optString("package", getPackageName());
+                if (!getPackageName().equals(manifestPackage)) {
+                    if (userVisible) {
+                        runOnUiThread(() -> Toast.makeText(this, "Update manifest targets a different app", Toast.LENGTH_LONG).show());
+                    }
+                    return;
+                }
+
+                long currentVersionCode = currentMpmuxVersionCode();
+                long nextVersionCode = manifest.optLong("version_code", -1);
+                String versionLabel = manifest.optString(
+                    "version_label",
+                    manifest.optString("version_name", nextVersionCode > 0 ? Long.toString(nextVersionCode) : "update")
+                );
+
+                if (nextVersionCode > 0 && currentVersionCode >= nextVersionCode) {
+                    if (userVisible) {
+                        runOnUiThread(() -> Toast.makeText(this, "mpmux is already up to date", Toast.LENGTH_LONG).show());
+                    }
+                    return;
+                }
+
+                String apkUrl = manifest.optString("apk_url", manifest.optString("url", ""));
+                String sha256 = manifest.optString("sha256", manifest.optString("apk_sha256", ""));
+                if (!isHttpsUrl(apkUrl) || !isValidSha256(sha256)) {
+                    if (userVisible) {
+                        runOnUiThread(() -> Toast.makeText(this, "Update manifest is missing a valid APK URL or SHA-256", Toast.LENGTH_LONG).show());
+                    }
+                    return;
+                }
+
+                runOnUiThread(() -> promptMpmuxSelfUpdate(apkUrl, sha256, versionLabel));
+            } catch (Exception err) {
+                Log.w(LOG_TAG, "mpmux update check failed", err);
+                if (userVisible) {
+                    runOnUiThread(() -> Toast.makeText(this, "Update check failed", Toast.LENGTH_LONG).show());
+                }
+            }
+        }, "MpmuxUpdateCheck").start();
+    }
+
+    private void promptMpmuxSelfUpdate(final String apkUrl, final String expectedSha256, final String versionLabel) {
+        runOnUiThread(() -> {
+            String safeVersion = sanitizeUpdateLabel(versionLabel == null || versionLabel.trim().isEmpty() ? "update" : versionLabel.trim());
+            new AlertDialog.Builder(this)
+                .setTitle("mpmux update available")
+                .setMessage("Version " + safeVersion + " is available. Download it now? Android will ask again before installing.")
+                .setPositiveButton("Download", (dialog, which) -> startMpmuxSelfUpdate(apkUrl, expectedSha256, safeVersion))
+                .setNegativeButton("Not now", null)
+                .show();
+        });
+    }
+
+    public void startMpmuxSelfUpdate(final String apkUrl, final String expectedSha256, final String versionLabel) {
+        runOnUiThread(() -> {
+            if (!isHttpsUrl(apkUrl)) {
+                Toast.makeText(this, "Update APK must use HTTPS", Toast.LENGTH_LONG).show();
+                return;
+            }
+            if (!isValidSha256(expectedSha256)) {
+                Toast.makeText(this, "Update APK is missing a valid SHA-256", Toast.LENGTH_LONG).show();
+                return;
+            }
+
+            DownloadManager downloadManager = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
+            if (downloadManager == null) {
+                Toast.makeText(this, "Android DownloadManager is unavailable", Toast.LENGTH_LONG).show();
+                return;
+            }
+            if (hasPendingMpmuxUpdateDownload()) {
+                resumePendingMpmuxUpdateDownload();
+                Toast.makeText(this, "mpmux update download is already in progress", Toast.LENGTH_LONG).show();
+                return;
+            }
+
+            clearMpmuxUpdateDownloadReceiver();
+            String safeVersion = sanitizeUpdateLabel(versionLabel == null || versionLabel.trim().isEmpty() ? "update" : versionLabel.trim());
+            String fileName = "mpmux-" + safeVersion + "-" + SystemClock.uptimeMillis() + ".apk";
+            DownloadManager.Request request = new DownloadManager.Request(Uri.parse(apkUrl));
+            request.setTitle("mpmux update " + safeVersion);
+            request.setDescription("Downloading update. Android will ask before installing.");
+            request.setMimeType("application/vnd.android.package-archive");
+            request.setAllowedNetworkTypes(DownloadManager.Request.NETWORK_WIFI | DownloadManager.Request.NETWORK_MOBILE);
+            request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+            request.setDestinationInExternalFilesDir(this, Environment.DIRECTORY_DOWNLOADS, fileName);
+
+            try {
+                mMpmuxUpdateExpectedSha256 = expectedSha256.toLowerCase(Locale.ROOT);
+                mMpmuxUpdateVersionLabel = safeVersion;
+                registerMpmuxUpdateDownloadReceiver();
+                mMpmuxUpdateDownloadId = downloadManager.enqueue(request);
+                persistMpmuxUpdateDownloadState();
+                Toast.makeText(this, "Downloading mpmux update…", Toast.LENGTH_LONG).show();
+            } catch (RuntimeException err) {
+                clearMpmuxUpdateDownloadReceiver();
+                clearMpmuxUpdateDownloadState();
+                Log.w(LOG_TAG, "failed to enqueue mpmux update download", err);
+                Toast.makeText(this, "Failed to start update download", Toast.LENGTH_LONG).show();
+            }
+        });
+    }
+
+    private JSONObject fetchMpmuxUpdateManifest(String manifestUrl) throws Exception {
+        HttpURLConnection connection = (HttpURLConnection) new URL(manifestUrl).openConnection();
+        connection.setInstanceFollowRedirects(true);
+        connection.setConnectTimeout(10000);
+        connection.setReadTimeout(15000);
+        connection.setRequestMethod("GET");
+        connection.setRequestProperty("Accept", "application/json");
+        try {
+            int statusCode = connection.getResponseCode();
+            if (statusCode < 200 || statusCode >= 300) {
+                throw new IOException("manifest HTTP status " + statusCode);
+            }
+            try (InputStream input = connection.getInputStream()) {
+                return new JSONObject(readBoundedUtf8(input, 1024 * 1024));
+            }
+        } finally {
+            connection.disconnect();
+        }
+    }
+
+    private String readBoundedUtf8(InputStream input, int maxBytes) throws IOException {
+        byte[] buffer = new byte[8192];
+        int total = 0;
+        StringBuilder body = new StringBuilder();
+        int read;
+        while ((read = input.read(buffer)) != -1) {
+            total += read;
+            if (total > maxBytes) {
+                throw new IOException("response too large");
+            }
+            body.append(new String(buffer, 0, read, java.nio.charset.StandardCharsets.UTF_8));
+        }
+        return body.toString();
+    }
+
+    private void resumePendingMpmuxUpdateDownload() {
+        SharedPreferences prefs = getSharedPreferences(MPMUX_UPDATE_PREFS, MODE_PRIVATE);
+        long downloadId = prefs.getLong(MPMUX_UPDATE_PREF_DOWNLOAD_ID, -1);
+        String expectedSha256 = prefs.getString(MPMUX_UPDATE_PREF_SHA256, null);
+        String versionLabel = prefs.getString(MPMUX_UPDATE_PREF_VERSION_LABEL, null);
+        if (downloadId <= 0 || !isValidSha256(expectedSha256)) {
+            return;
+        }
+
+        DownloadManager downloadManager = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
+        if (downloadManager == null) {
+            return;
+        }
+
+        int status = mpmuxUpdateDownloadStatus(downloadManager, downloadId);
+        if (status == DownloadManager.STATUS_SUCCESSFUL) {
+            mMpmuxUpdateDownloadId = downloadId;
+            mMpmuxUpdateExpectedSha256 = expectedSha256.toLowerCase(Locale.ROOT);
+            mMpmuxUpdateVersionLabel = versionLabel == null ? "update" : versionLabel;
+            handleMpmuxUpdateDownloadComplete(downloadId);
+        } else if (status == DownloadManager.STATUS_PENDING
+            || status == DownloadManager.STATUS_RUNNING
+            || status == DownloadManager.STATUS_PAUSED) {
+            mMpmuxUpdateDownloadId = downloadId;
+            mMpmuxUpdateExpectedSha256 = expectedSha256.toLowerCase(Locale.ROOT);
+            mMpmuxUpdateVersionLabel = versionLabel == null ? "update" : versionLabel;
+            registerMpmuxUpdateDownloadReceiver();
+        } else {
+            clearMpmuxUpdateDownloadState();
+        }
+    }
+
+    private void registerMpmuxUpdateDownloadReceiver() {
+        if (mMpmuxUpdateDownloadReceiver != null) {
+            return;
+        }
+        mMpmuxUpdateDownloadReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                if (!DownloadManager.ACTION_DOWNLOAD_COMPLETE.equals(intent.getAction())) {
+                    return;
+                }
+                long downloadId = intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1);
+                if (downloadId != mMpmuxUpdateDownloadId) {
+                    return;
+                }
+                handleMpmuxUpdateDownloadComplete(downloadId);
+            }
+        };
+
+        IntentFilter filter = new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            // DownloadManager completion is sent by the platform downloads provider;
+            // keep the receiver exported on API 33+ and gate the payload by the
+            // exact enqueue id before doing any verification work.
+            registerReceiver(mMpmuxUpdateDownloadReceiver, filter, Context.RECEIVER_EXPORTED);
+        } else {
+            registerReceiver(mMpmuxUpdateDownloadReceiver, filter);
+        }
+    }
+
+    private void handleMpmuxUpdateDownloadComplete(long downloadId) {
+        clearMpmuxUpdateDownloadReceiver();
+        DownloadManager downloadManager = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
+        if (downloadManager == null) {
+            Toast.makeText(this, "Android DownloadManager is unavailable", Toast.LENGTH_LONG).show();
+            return;
+        }
+
+        if (!mpmuxUpdateDownloadSucceeded(downloadManager, downloadId)) {
+            Toast.makeText(this, "mpmux update download failed", Toast.LENGTH_LONG).show();
+            clearMpmuxUpdateDownloadState();
+            return;
+        }
+
+        try {
+            String actualSha256 = sha256ForDownloadedFile(downloadManager, downloadId);
+            if (!actualSha256.equalsIgnoreCase(mMpmuxUpdateExpectedSha256)) {
+                Log.w(LOG_TAG, "mpmux update SHA-256 mismatch; refusing install");
+                Toast.makeText(this, "Update verification failed", Toast.LENGTH_LONG).show();
+                clearMpmuxUpdateDownloadState();
+                return;
+            }
+            String validationError = validateMpmuxDownloadedApk(downloadManager, downloadId);
+            if (validationError != null) {
+                Log.w(LOG_TAG, "mpmux update APK validation failed: " + validationError);
+                Toast.makeText(this, validationError, Toast.LENGTH_LONG).show();
+                clearMpmuxUpdateDownloadState();
+                return;
+            }
+        } catch (Exception err) {
+            Log.w(LOG_TAG, "failed to verify mpmux update", err);
+            Toast.makeText(this, "Update verification failed", Toast.LENGTH_LONG).show();
+            clearMpmuxUpdateDownloadState();
+            return;
+        }
+
+        Uri apkUri = downloadManager.getUriForDownloadedFile(downloadId);
+        clearMpmuxUpdateDownloadState();
+        if (apkUri == null) {
+            Toast.makeText(this, "Downloaded update is unavailable", Toast.LENGTH_LONG).show();
+            return;
+        }
+        promptInstallMpmuxUpdate(apkUri);
+    }
+
+    private boolean mpmuxUpdateDownloadSucceeded(DownloadManager downloadManager, long downloadId) {
+        return mpmuxUpdateDownloadStatus(downloadManager, downloadId) == DownloadManager.STATUS_SUCCESSFUL;
+    }
+
+    private int mpmuxUpdateDownloadStatus(DownloadManager downloadManager, long downloadId) {
+        DownloadManager.Query query = new DownloadManager.Query().setFilterById(downloadId);
+        try (Cursor cursor = downloadManager.query(query)) {
+            if (cursor == null || !cursor.moveToFirst()) {
+                return -1;
+            }
+            int statusIndex = cursor.getColumnIndex(DownloadManager.COLUMN_STATUS);
+            return statusIndex >= 0 ? cursor.getInt(statusIndex) : -1;
+        }
+    }
+
+    private String sha256ForDownloadedFile(DownloadManager downloadManager, long downloadId) throws Exception {
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        try (ParcelFileDescriptor descriptor = downloadManager.openDownloadedFile(downloadId);
+             FileInputStream input = new FileInputStream(descriptor.getFileDescriptor())) {
+            byte[] buffer = new byte[64 * 1024];
+            int read;
+            while ((read = input.read(buffer)) != -1) {
+                digest.update(buffer, 0, read);
+            }
+        }
+        return hexDigest(digest.digest());
+    }
+
+    private String validateMpmuxDownloadedApk(DownloadManager downloadManager, long downloadId) throws Exception {
+        File validationApk = copyDownloadedApkForPackageValidation(downloadManager, downloadId);
+        try {
+            PackageInfo updateInfo = getPackageManager().getPackageArchiveInfo(
+                validationApk.getAbsolutePath(),
+                packageInfoSignatureFlags()
+            );
+            if (updateInfo == null) {
+                return "Downloaded update is not a valid APK";
+            }
+            if (!getPackageName().equals(updateInfo.packageName)) {
+                return "Downloaded update targets a different app";
+            }
+
+            long updateVersionCode = packageInfoVersionCode(updateInfo);
+            long currentVersionCode = currentMpmuxVersionCode();
+            if (updateVersionCode > 0 && currentVersionCode >= updateVersionCode) {
+                return "Downloaded update is not newer";
+            }
+
+            PackageInfo installedInfo = getPackageManager().getPackageInfo(getPackageName(), packageInfoSignatureFlags());
+            Set<String> installedSigners = packageSigningSha256(installedInfo);
+            Set<String> updateSigners = packageSigningSha256(updateInfo);
+            if (installedSigners.isEmpty() || updateSigners.isEmpty()) {
+                return "Downloaded update signing certificate is unavailable";
+            }
+            if (!installedSigners.containsAll(updateSigners)) {
+                return "Downloaded update is signed by a different key";
+            }
+            return null;
+        } finally {
+            if (!validationApk.delete()) {
+                validationApk.deleteOnExit();
+            }
+        }
+    }
+
+    private File copyDownloadedApkForPackageValidation(DownloadManager downloadManager, long downloadId) throws IOException {
+        File validationApk = new File(getCacheDir(), "mpmux-update-validation.apk");
+        try (ParcelFileDescriptor descriptor = downloadManager.openDownloadedFile(downloadId);
+             FileInputStream input = new FileInputStream(descriptor.getFileDescriptor());
+             FileOutputStream output = new FileOutputStream(validationApk, false)) {
+            byte[] buffer = new byte[64 * 1024];
+            int read;
+            while ((read = input.read(buffer)) != -1) {
+                output.write(buffer, 0, read);
+            }
+        }
+        return validationApk;
+    }
+
+    private long packageInfoVersionCode(PackageInfo info) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            return info.getLongVersionCode();
+        }
+        return info.versionCode;
+    }
+
+    @SuppressWarnings("deprecation")
+    private int packageInfoSignatureFlags() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            return PackageManager.GET_SIGNING_CERTIFICATES;
+        }
+        return PackageManager.GET_SIGNATURES;
+    }
+
+    @SuppressWarnings("deprecation")
+    private Set<String> packageSigningSha256(PackageInfo info) throws Exception {
+        Signature[] signatures;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && info.signingInfo != null) {
+            if (info.signingInfo.hasMultipleSigners()) {
+                signatures = info.signingInfo.getApkContentsSigners();
+            } else {
+                signatures = info.signingInfo.getSigningCertificateHistory();
+            }
+        } else {
+            signatures = info.signatures;
+        }
+
+        java.util.HashSet<String> digests = new java.util.HashSet<>();
+        if (signatures == null) {
+            return digests;
+        }
+        for (Signature signature : signatures) {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            digests.add(hexDigest(digest.digest(signature.toByteArray())));
+        }
+        return digests;
+    }
+
+    private String hexDigest(byte[] digest) {
+        StringBuilder hex = new StringBuilder(digest.length * 2);
+        for (byte b : digest) {
+            hex.append(String.format(Locale.ROOT, "%02x", b & 0xff));
+        }
+        return hex.toString();
+    }
+
+    private void promptInstallMpmuxUpdate(Uri apkUri) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !getPackageManager().canRequestPackageInstalls()) {
+            Toast.makeText(this, "Allow mpmux to install unknown apps, then retry the update", Toast.LENGTH_LONG).show();
+            Intent settingsIntent = new Intent(
+                Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                Uri.parse("package:" + getPackageName())
+            );
+            settingsIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            try {
+                startActivity(settingsIntent);
+            } catch (RuntimeException err) {
+                Log.w(LOG_TAG, "failed to open unknown-app install settings", err);
+            }
+            return;
+        }
+
+        Intent installIntent = new Intent(Intent.ACTION_VIEW);
+        installIntent.setDataAndType(apkUri, "application/vnd.android.package-archive");
+        installIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        try {
+            startActivity(installIntent);
+            Toast.makeText(this, "Android will ask before installing the verified update", Toast.LENGTH_LONG).show();
+        } catch (RuntimeException err) {
+            Log.w(LOG_TAG, "failed to open Android package installer", err);
+            Toast.makeText(this, "Could not open Android installer", Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void clearMpmuxUpdateDownloadReceiver() {
+        if (mMpmuxUpdateDownloadReceiver == null) {
+            return;
+        }
+        try {
+            unregisterReceiver(mMpmuxUpdateDownloadReceiver);
+        } catch (IllegalArgumentException ignored) {
+        }
+        mMpmuxUpdateDownloadReceiver = null;
+    }
+
+    private void persistMpmuxUpdateDownloadState() {
+        if (mMpmuxUpdateDownloadId <= 0 || !isValidSha256(mMpmuxUpdateExpectedSha256)) {
+            return;
+        }
+        getSharedPreferences(MPMUX_UPDATE_PREFS, MODE_PRIVATE)
+            .edit()
+            .putLong(MPMUX_UPDATE_PREF_DOWNLOAD_ID, mMpmuxUpdateDownloadId)
+            .putString(MPMUX_UPDATE_PREF_SHA256, mMpmuxUpdateExpectedSha256)
+            .putString(MPMUX_UPDATE_PREF_VERSION_LABEL, mMpmuxUpdateVersionLabel == null ? "update" : mMpmuxUpdateVersionLabel)
+            .apply();
+    }
+
+    private void clearMpmuxUpdateDownloadState() {
+        mMpmuxUpdateDownloadId = -1;
+        mMpmuxUpdateExpectedSha256 = null;
+        mMpmuxUpdateVersionLabel = null;
+        getSharedPreferences(MPMUX_UPDATE_PREFS, MODE_PRIVATE)
+            .edit()
+            .clear()
+            .apply();
+    }
+
+    private boolean isHttpsUrl(String url) {
+        if (url == null) {
+            return false;
+        }
+        try {
+            Uri uri = Uri.parse(url.trim());
+            return "https".equalsIgnoreCase(uri.getScheme()) && uri.getHost() != null;
+        } catch (RuntimeException err) {
+            return false;
+        }
+    }
+
+    private boolean isValidSha256(String sha256) {
+        return sha256 != null && sha256.matches("(?i)^[0-9a-f]{64}$");
+    }
+
+    private String sanitizeUpdateLabel(String value) {
+        String sanitized = value.replaceAll("[^A-Za-z0-9._-]", "-");
+        if (sanitized.isEmpty()) {
+            return "update";
+        }
+        return sanitized.length() > 48 ? sanitized.substring(0, 48) : sanitized;
+    }
+
+    private long currentMpmuxVersionCode() {
+        try {
+            android.content.pm.PackageInfo info = getPackageManager().getPackageInfo(getPackageName(), 0);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                return info.getLongVersionCode();
+            }
+            return info.versionCode;
+        } catch (PackageManager.NameNotFoundException err) {
+            return -1;
+        }
+    }
+
+    public void startMpmuxQrScanner() {
+        runOnUiThread(() -> {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(new String[]{Manifest.permission.CAMERA}, 7301);
+                return;
+            }
+            showMpmuxQrScannerOverlay();
+        });
+    }
+
+    private void showMpmuxQrScannerOverlay() {
+        if (mMpmuxQrScannerActive) {
+            return;
+        }
+        try {
+            mMpmuxQrScannerCamera = android.hardware.Camera.open();
+        } catch (RuntimeException err) {
+            Log.w(LOG_TAG, "failed to open camera for mpmux QR scanner", err);
+            return;
+        }
+
+        mMpmuxQrScannerActive = true;
+        mMpmuxQrScannerOverlay = new FrameLayout(this);
+        mMpmuxQrScannerOverlay.setBackgroundColor(Color.BLACK);
+        mMpmuxQrScannerPreview = new SurfaceView(this);
+        mMpmuxQrScannerOverlay.addView(mMpmuxQrScannerPreview, new FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT
+        ));
+        mMpmuxQrScannerResultOverlay = new View(this) {
+            private final Paint checkPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            private final Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+
+            {
+                checkPaint.setColor(0xFF5DFF7A);
+                checkPaint.setStyle(Paint.Style.STROKE);
+                checkPaint.setStrokeCap(Paint.Cap.ROUND);
+                checkPaint.setStrokeJoin(Paint.Join.ROUND);
+                checkPaint.setStrokeWidth(Math.max(10.0f, getResources().getDisplayMetrics().density * 8.0f));
+                textPaint.setColor(Color.WHITE);
+                textPaint.setTextAlign(Paint.Align.CENTER);
+                textPaint.setTextSize(Math.max(24.0f, getResources().getDisplayMetrics().scaledDensity * 22.0f));
+            }
+
+            @Override
+            protected void onDraw(Canvas canvas) {
+                super.onDraw(canvas);
+                drawMpmuxQrScannerResult(canvas, checkPaint, textPaint, getWidth(), getHeight());
+            }
+        };
+        mMpmuxQrScannerResultOverlay.setClickable(false);
+        mMpmuxQrScannerResultOverlay.setFocusable(false);
+        mMpmuxQrScannerOverlay.addView(mMpmuxQrScannerResultOverlay, new FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT
+        ));
+
+        TextView label = new TextView(this);
+        label.setText("Scan mpmux pairing QR\nTap to focus · Back to cancel");
+        label.setTextColor(Color.WHITE);
+        label.setGravity(Gravity.CENTER);
+        label.setBackgroundColor(0x99000000);
+        FrameLayout.LayoutParams labelParams = new FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.TOP
+        );
+        mMpmuxQrScannerOverlay.addView(label, labelParams);
+        mMpmuxQrScannerOverlay.setOnTouchListener((view, event) -> {
+            if (event.getActionMasked() == MotionEvent.ACTION_UP) {
+                focusMpmuxQrScannerAt(event.getX(), event.getY(), view.getWidth(), view.getHeight());
+            }
+            return true;
+        });
+        mRootLayout.addView(mMpmuxQrScannerOverlay, new FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT
+        ));
+
+        mMpmuxQrScannerPreview.getHolder().addCallback(new SurfaceHolder.Callback() {
+            @Override
+            public void surfaceCreated(SurfaceHolder holder) {
+                startMpmuxQrScannerPreview(holder);
+            }
+
+            @Override
+            public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
+                startMpmuxQrScannerPreview(holder);
+            }
+
+            @Override
+            public void surfaceDestroyed(SurfaceHolder holder) {
+                stopMpmuxQrScannerCamera();
+            }
+        });
+    }
+
+    private void startMpmuxQrScannerPreview(SurfaceHolder holder) {
+        if (mMpmuxQrScannerCamera == null) {
+            return;
+        }
+        try {
+            mMpmuxQrScannerCamera.stopPreview();
+        } catch (RuntimeException ignored) {}
+        try {
+            mMpmuxQrScannerCamera.setPreviewDisplay(holder);
+            android.hardware.Camera.Parameters params = mMpmuxQrScannerCamera.getParameters();
+            configureMpmuxQrScannerCamera(params);
+            mMpmuxQrScannerCamera.setParameters(params);
+            mMpmuxQrScannerCamera.setDisplayOrientation(mpmuxQrScannerDisplayOrientation());
+            android.hardware.Camera.Size size = params.getPreviewSize();
+            mMpmuxQrScannerCamera.setPreviewCallback((data, camera) -> decodeMpmuxQrFrame(data, size.width, size.height));
+            mMpmuxQrScannerCamera.startPreview();
+            mHandler.removeCallbacks(mMpmuxQrScannerAutofocus);
+            mHandler.postDelayed(mMpmuxQrScannerAutofocus, 400);
+        } catch (IOException | RuntimeException err) {
+            Log.w(LOG_TAG, "failed to start mpmux QR scanner preview", err);
+            stopMpmuxQrScanner();
+        }
+    }
+
+    private void configureMpmuxQrScannerCamera(android.hardware.Camera.Parameters params) {
+        List<String> focusModes = params.getSupportedFocusModes();
+        if (focusModes != null) {
+            if (focusModes.contains(android.hardware.Camera.Parameters.FOCUS_MODE_CONTINUOUS_VIDEO)) {
+                params.setFocusMode(android.hardware.Camera.Parameters.FOCUS_MODE_CONTINUOUS_VIDEO);
+            } else if (focusModes.contains(android.hardware.Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE)) {
+                params.setFocusMode(android.hardware.Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE);
+            } else if (focusModes.contains(android.hardware.Camera.Parameters.FOCUS_MODE_MACRO)) {
+                params.setFocusMode(android.hardware.Camera.Parameters.FOCUS_MODE_MACRO);
+            } else if (focusModes.contains(android.hardware.Camera.Parameters.FOCUS_MODE_AUTO)) {
+                params.setFocusMode(android.hardware.Camera.Parameters.FOCUS_MODE_AUTO);
+            }
+        }
+
+        if (params.getMaxNumFocusAreas() > 0) {
+            ArrayList<android.hardware.Camera.Area> focusAreas = new ArrayList<>();
+            focusAreas.add(new android.hardware.Camera.Area(new Rect(-350, -350, 350, 350), 1000));
+            params.setFocusAreas(focusAreas);
+        }
+        if (params.getMaxNumMeteringAreas() > 0) {
+            ArrayList<android.hardware.Camera.Area> meteringAreas = new ArrayList<>();
+            meteringAreas.add(new android.hardware.Camera.Area(new Rect(-500, -500, 500, 500), 1000));
+            params.setMeteringAreas(meteringAreas);
+        }
+
+        if (params.isZoomSupported()) {
+            int maxZoom = params.getMaxZoom();
+            if (maxZoom > 0) {
+                params.setZoom(Math.min(maxZoom, 3));
+            }
+        }
+
+        android.hardware.Camera.Size preferredSize = null;
+        List<android.hardware.Camera.Size> sizes = params.getSupportedPreviewSizes();
+        if (sizes != null) {
+            for (android.hardware.Camera.Size size : sizes) {
+                if (preferredSize == null || Math.abs((size.width * size.height) - (1280 * 720)) < Math.abs((preferredSize.width * preferredSize.height) - (1280 * 720))) {
+                    preferredSize = size;
+                }
+            }
+        }
+        if (preferredSize != null) {
+            params.setPreviewSize(preferredSize.width, preferredSize.height);
+        }
+    }
+
+    private void focusMpmuxQrScannerAt(float x, float y, int viewWidth, int viewHeight) {
+        if (mMpmuxQrScannerCamera == null || viewWidth <= 0 || viewHeight <= 0) {
+            return;
+        }
+        try {
+            mHandler.removeCallbacks(mMpmuxQrScannerAutofocus);
+            mMpmuxQrScannerCamera.cancelAutoFocus();
+            android.hardware.Camera.Parameters params = mMpmuxQrScannerCamera.getParameters();
+            if (params.getMaxNumFocusAreas() > 0) {
+                ArrayList<android.hardware.Camera.Area> focusAreas = new ArrayList<>();
+                focusAreas.add(new android.hardware.Camera.Area(mpmuxQrScannerFocusRect(x, y, viewWidth, viewHeight, 260), 1000));
+                params.setFocusAreas(focusAreas);
+            }
+            if (params.getMaxNumMeteringAreas() > 0) {
+                ArrayList<android.hardware.Camera.Area> meteringAreas = new ArrayList<>();
+                meteringAreas.add(new android.hardware.Camera.Area(mpmuxQrScannerFocusRect(x, y, viewWidth, viewHeight, 420), 1000));
+                params.setMeteringAreas(meteringAreas);
+            }
+            List<String> focusModes = params.getSupportedFocusModes();
+            if (focusModes != null && focusModes.contains(android.hardware.Camera.Parameters.FOCUS_MODE_AUTO)) {
+                params.setFocusMode(android.hardware.Camera.Parameters.FOCUS_MODE_AUTO);
+            }
+            mMpmuxQrScannerCamera.setParameters(params);
+            mMpmuxQrScannerCamera.autoFocus((success, camera) -> {
+                if (mMpmuxQrScannerActive) {
+                    mHandler.postDelayed(mMpmuxQrScannerAutofocus, 1800);
+                }
+            });
+        } catch (RuntimeException err) {
+            Log.w(LOG_TAG, "failed to focus mpmux QR scanner", err);
+        }
+    }
+
+    private Rect mpmuxQrScannerFocusRect(float x, float y, int viewWidth, int viewHeight, int size) {
+        int centerX = clamp((int) ((x / viewWidth) * 2000.0f - 1000.0f), -1000, 1000);
+        int centerY = clamp((int) ((y / viewHeight) * 2000.0f - 1000.0f), -1000, 1000);
+        int half = size / 2;
+        return new Rect(
+            clamp(centerX - half, -1000, 1000),
+            clamp(centerY - half, -1000, 1000),
+            clamp(centerX + half, -1000, 1000),
+            clamp(centerY + half, -1000, 1000)
+        );
+    }
+
+    private int clamp(int value, int min, int max) {
+        return Math.max(min, Math.min(max, value));
+    }
+
+    private int mpmuxQrScannerDisplayOrientation() {
+        android.hardware.Camera.CameraInfo info = new android.hardware.Camera.CameraInfo();
+        android.hardware.Camera.getCameraInfo(0, info);
+        int rotation = getWindowManager().getDefaultDisplay().getRotation();
+        int degrees = 0;
+        switch (rotation) {
+            case Surface.ROTATION_90:
+                degrees = 90;
+                break;
+            case Surface.ROTATION_180:
+                degrees = 180;
+                break;
+            case Surface.ROTATION_270:
+                degrees = 270;
+                break;
+            case Surface.ROTATION_0:
+            default:
+                degrees = 0;
+                break;
+        }
+        if (info.facing == android.hardware.Camera.CameraInfo.CAMERA_FACING_FRONT) {
+            return (360 - ((info.orientation + degrees) % 360)) % 360;
+        }
+        return (info.orientation - degrees + 360) % 360;
+    }
+
+    private void decodeMpmuxQrFrame(byte[] data, int width, int height) {
+        if (!mMpmuxQrScannerActive) {
+            return;
+        }
+        try {
+            Class<?> detectorBuilderClass = Class.forName("com.google.android.gms.vision.barcode.BarcodeDetector$Builder");
+            Class<?> barcodeDetectorClass = Class.forName("com.google.android.gms.vision.barcode.BarcodeDetector");
+            Class<?> barcodeClass = Class.forName("com.google.android.gms.vision.barcode.Barcode");
+            Object builder = detectorBuilderClass.getConstructor(Context.class).newInstance(this);
+            Method setBarcodeFormats = detectorBuilderClass.getMethod("setBarcodeFormats", int.class);
+            setBarcodeFormats.invoke(builder, barcodeClass.getField("QR_CODE").getInt(null));
+            Object detector = detectorBuilderClass.getMethod("build").invoke(builder);
+            boolean operational = (Boolean) barcodeDetectorClass.getMethod("isOperational").invoke(detector);
+            if (!operational) {
+                barcodeDetectorClass.getMethod("release").invoke(detector);
+                decodeMpmuxQrFrameWithZxing(data, width, height);
+                return;
+            }
+
+            Class<?> frameBuilderClass = Class.forName("com.google.android.gms.vision.Frame$Builder");
+            Object frameBuilder = frameBuilderClass.getConstructor().newInstance();
+            Method setImageData = frameBuilderClass.getMethod("setImageData", ByteBuffer.class, int.class, int.class, int.class);
+            setImageData.invoke(frameBuilder, ByteBuffer.wrap(data), width, height, ImageFormat.NV21);
+            Object frame = frameBuilderClass.getMethod("build").invoke(frameBuilder);
+            SparseArray<?> barcodes = (SparseArray<?>) barcodeDetectorClass.getMethod("detect", Class.forName("com.google.android.gms.vision.Frame")).invoke(detector, frame);
+            barcodeDetectorClass.getMethod("release").invoke(detector);
+            if (barcodes.size() == 0) {
+                return;
+            }
+            Object barcode = barcodes.valueAt(0);
+            String value = (String) barcodeClass.getField("displayValue").get(barcode);
+            if (value == null || value.isEmpty()) {
+                value = (String) barcodeClass.getField("rawValue").get(barcode);
+            }
+            if (value != null && (value.startsWith("mpmux://sessiond-pair?") || value.startsWith("mpmux://pair?"))) {
+                handleMpmuxQrScannerResult(value, null, width, height);
+            }
+        } catch (ClassNotFoundException err) {
+            decodeMpmuxQrFrameWithZxing(data, width, height);
+        } catch (Exception err) {
+            Log.w(LOG_TAG, "failed to decode mpmux QR frame", err);
+        }
+    }
+
+    private void decodeMpmuxQrFrameWithZxing(byte[] data, int width, int height) {
+        try {
+            PlanarYUVLuminanceSource source = new PlanarYUVLuminanceSource(
+                data,
+                width,
+                height,
+                0,
+                0,
+                width,
+                height,
+                false
+            );
+            Result result = decodeMpmuxQrLuminanceSource(source);
+            if (result == null && source.isRotateSupported()) {
+                LuminanceSource rotated = source.rotateCounterClockwise();
+                result = decodeMpmuxQrLuminanceSource(rotated);
+                if (result == null && rotated.isRotateSupported()) {
+                    LuminanceSource rotatedTwice = rotated.rotateCounterClockwise();
+                    result = decodeMpmuxQrLuminanceSource(rotatedTwice);
+                    if (result == null && rotatedTwice.isRotateSupported()) {
+                        result = decodeMpmuxQrLuminanceSource(rotatedTwice.rotateCounterClockwise());
+                    }
+                }
+            }
+            if (result == null) {
+                return;
+            }
+            String value = result.getText();
+            if (value != null && (value.startsWith("mpmux://sessiond-pair?") || value.startsWith("mpmux://pair?"))) {
+                handleMpmuxQrScannerResult(value, result.getResultPoints(), width, height);
+            }
+        } catch (Exception err) {
+            Log.w(LOG_TAG, "failed to decode mpmux QR frame with bundled ZXing", err);
+        }
+    }
+
+    private Result decodeMpmuxQrLuminanceSource(LuminanceSource source) throws Exception {
+        BinaryBitmap bitmap = new BinaryBitmap(new HybridBinarizer(source));
+        MultiFormatReader reader = new MultiFormatReader();
+        EnumMap<DecodeHintType, Object> hints = new EnumMap<>(DecodeHintType.class);
+        hints.put(DecodeHintType.POSSIBLE_FORMATS, EnumSet.of(BarcodeFormat.QR_CODE));
+        hints.put(DecodeHintType.TRY_HARDER, Boolean.TRUE);
+        try {
+            return reader.decode(bitmap, hints);
+        } catch (NotFoundException err) {
+            return null;
+        } finally {
+            reader.reset();
+        }
+    }
+
+    private void handleMpmuxQrScannerResult(String pairingUrl, ResultPoint[] points, int width, int height) {
+        runOnUiThread(() -> {
+            if (mMpmuxQrScannerFound) {
+                return;
+            }
+            mMpmuxQrScannerFound = true;
+            mMpmuxQrScannerResultPoints = points;
+            mMpmuxQrScannerResultWidth = width;
+            mMpmuxQrScannerResultHeight = height;
+            if (mMpmuxQrScannerResultOverlay != null) {
+                mMpmuxQrScannerResultOverlay.invalidate();
+            }
+            Toast.makeText(this, "QR found. Pairing and connecting…", Toast.LENGTH_LONG).show();
+            mHandler.postDelayed(() -> {
+                if (mMpmuxQrScannerActive) {
+                    persistMpmuxPairingUrl(pairingUrl, true);
+                    stopMpmuxQrScanner();
+                }
+            }, 700);
+        });
+    }
+
+    private void drawMpmuxQrScannerResult(Canvas canvas, Paint checkPaint, Paint textPaint, int viewWidth, int viewHeight) {
+        if (mMpmuxQrScannerFound) {
+            canvas.drawColor(0x99000000);
+            float size = Math.min(viewWidth, viewHeight) * 0.32f;
+            float centerX = viewWidth * 0.5f;
+            float centerY = viewHeight * 0.42f;
+            canvas.drawLine(centerX - size * 0.45f, centerY, centerX - size * 0.12f, centerY + size * 0.32f, checkPaint);
+            canvas.drawLine(centerX - size * 0.12f, centerY + size * 0.32f, centerX + size * 0.50f, centerY - size * 0.36f, checkPaint);
+            canvas.drawText("QR found", centerX, centerY + size * 0.78f, textPaint);
+            canvas.drawText("Pairing and connecting…", centerX, centerY + size * 1.08f, textPaint);
+            return;
+        }
+    }
+
+    private void stopMpmuxQrScanner() {
+        stopMpmuxQrScannerCamera();
+        if (mMpmuxQrScannerOverlay != null) {
+            mRootLayout.removeView(mMpmuxQrScannerOverlay);
+            mMpmuxQrScannerOverlay = null;
+            mMpmuxQrScannerPreview = null;
+            mMpmuxQrScannerResultOverlay = null;
+        }
+        mMpmuxQrScannerResultPoints = null;
+        mMpmuxQrScannerResultWidth = 0;
+        mMpmuxQrScannerResultHeight = 0;
+        mMpmuxQrScannerFound = false;
+        mMpmuxQrScannerActive = false;
+    }
+
+    private void stopMpmuxQrScannerCamera() {
+        if (mMpmuxQrScannerCamera != null) {
+            try {
+                mHandler.removeCallbacks(mMpmuxQrScannerAutofocus);
+                mMpmuxQrScannerCamera.setPreviewCallback(null);
+                mMpmuxQrScannerCamera.cancelAutoFocus();
+                mMpmuxQrScannerCamera.stopPreview();
+            } catch (RuntimeException ignored) {}
+            mMpmuxQrScannerCamera.release();
+            mMpmuxQrScannerCamera = null;
+        }
+    }
+
 
     @SuppressWarnings("deprecation")
     public float getDeviceRefreshRate() {
