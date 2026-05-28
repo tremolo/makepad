@@ -1555,6 +1555,17 @@ public class MakepadActivity
     }
 
     @Override
+    public boolean dispatchKeyEvent(KeyEvent event) {
+        if (event != null && event.getKeyCode() == KeyEvent.KEYCODE_BACK && mMpmuxQrScannerActive) {
+            if (event.getAction() == KeyEvent.ACTION_UP && !event.isCanceled()) {
+                stopMpmuxQrScanner();
+            }
+            return true;
+        }
+        return super.dispatchKeyEvent(event);
+    }
+
+    @Override
     @SuppressWarnings("deprecation")
     public void onBackPressed() {
         // Navigation is handled asynchronously by the Makepad UI. The superclass
