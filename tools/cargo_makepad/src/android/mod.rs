@@ -46,7 +46,6 @@ pub struct ManifestArgs<'a> {
     pub version_code: u32,
     pub version_name: &'a str,
     pub debuggable: bool,
-    pub app_manifest_application_xml: &'a str,
 }
 
 impl AndroidVariant {
@@ -74,7 +73,6 @@ impl AndroidVariant {
             version_code,
             version_name,
             debuggable,
-            app_manifest_application_xml,
         } = args;
         let icon_attr = if *has_icon {
             "\n                    android:icon=\"@mipmap/ic_launcher\""
@@ -115,7 +113,6 @@ impl AndroidVariant {
                         <category android:name="android.intent.category.LAUNCHER" />
                     </intent-filter>
                     </activity>
-{app_manifest_application_xml}
                 </application>
                 <uses-sdk android:minSdkVersion="{sdk_version}" android:targetSdkVersion="{target_sdk_version}" />
                 <uses-feature android:glEsVersion="0x00020000" android:required="true"/>
@@ -135,7 +132,6 @@ impl AndroidVariant {
                 <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
                 <uses-permission android:name="android.permission.USE_BIOMETRIC" />
                 <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" tools:ignore="QueryAllPackagesPermission" />
-                <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
                 <queries>
                 <intent>
@@ -213,7 +209,6 @@ impl AndroidVariant {
                             <category android:name="android.intent.category.LAUNCHER" />
                         </intent-filter>
                         </activity>
-{app_manifest_application_xml}
 
                     <activity
                         android:name="{class_name}Xr"
@@ -230,7 +225,6 @@ impl AndroidVariant {
                             <category android:name="com.oculus.intent.category.VR" />
                         </intent-filter>
                     </activity>
-{app_manifest_application_xml}
                 </application>
 
                 <queries>
