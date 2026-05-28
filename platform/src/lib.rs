@@ -214,7 +214,6 @@ pub use {
         event::{
             CancelScope,
             CancelScopeKind,
-            AndroidWindowInsetsEvent,
             CharOffset,
             DigitDevice,
             DragEvent,
