@@ -1222,6 +1222,7 @@ fn compile_java(
     let makepad_java_classes_dir = &cargo_manifest_dir
         .join("src/android/java/")
         .join(makepad_package_path);
+    let java_libs = [cargo_manifest_dir.join("src/android/java-libs/zxing-core-3.5.3.jar")];
     let mut java_sources = vec![
         r_class_path.clone(),
         makepad_java_classes_dir.join("MakepadNative.java"),
@@ -1247,6 +1248,12 @@ fn compile_java(
         source.to_string_lossy().hash(&mut hasher);
         fs::read(source)
             .map_err(|e| format!("failed to read Java source {:?}: {e}", source))?
+            .hash(&mut hasher);
+    }
+    for lib in &java_libs {
+        lib.to_string_lossy().hash(&mut hasher);
+        fs::read(lib)
+            .map_err(|e| format!("failed to read Java library {:?}: {e}", lib))?
             .hash(&mut hasher);
     }
     let java_inputs_hash = format!("{:016x}", hasher.finish());
@@ -1285,6 +1292,14 @@ fn compile_java(
     }
 
     let android_jar = android_jar_path(sdk_dir, urls);
+    let java_classpath = std::iter::once(android_jar.to_string_lossy().into_owned())
+        .chain(
+            java_libs
+                .iter()
+                .map(|path| path.to_string_lossy().into_owned()),
+        )
+        .collect::<Vec<_>>()
+        .join(":");
     let _ = rmdir(&build_paths.java_out_dir);
     mkdir(&build_paths.java_out_dir)?;
     // Force UTF-8: Chinese Windows defaults javac to GBK, and UTF-8 comments
@@ -1298,7 +1313,7 @@ fn compile_java(
         "1.8",
         "-Xlint:-options",
         "-classpath",
-        android_jar.to_str().unwrap(),
+        &java_classpath,
         "-Xlint:deprecation",
         "-d",
         build_paths.java_out_dir.to_str().unwrap(),
@@ -1346,6 +1361,8 @@ fn build_dex(
 
     let d8_jar = d8_jar_path(sdk_dir, urls);
     let android_jar = android_jar_path(sdk_dir, urls);
+    let zxing_jar =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/android/java-libs/zxing-core-3.5.3.jar");
 
     let mut args: Vec<&str> = vec![
         "-cp",
@@ -1360,6 +1377,7 @@ fn build_dex(
     for class_file in &class_files {
         args.push(class_file.to_str().unwrap());
     }
+    args.push(zxing_jar.to_str().unwrap());
 
     shell_env_cap(
         &[("JAVA_HOME", (java_home.to_str().unwrap()))],

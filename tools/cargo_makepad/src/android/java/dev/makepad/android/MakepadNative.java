@@ -12,6 +12,7 @@ public class MakepadNative {
     public native static void activityOnStop();
     public native static void activityOnDestroy();
     public native static void activityOnWindowFocusChanged(boolean has_focus);
+    public native static void onAndroidIntentUrl(String url);
     public static native void onAndroidParams(String cache_path, String data_path, float density, boolean isEmulator, String androidVersion, String buildNumber,
         String kernelVersion);
 

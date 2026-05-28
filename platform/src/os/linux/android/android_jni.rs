@@ -738,6 +738,16 @@ pub unsafe extern "C" fn Java_dev_makepad_android_MakepadNative_onAndroidParams(
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn Java_dev_makepad_android_MakepadNative_onAndroidIntentUrl(
+    env: *mut jni_sys::JNIEnv,
+    _class: jni_sys::jclass,
+    url: jni_sys::jstring,
+) {
+    let _ = jstring_to_string(env, url);
+    send_from_java_message(FromJavaMessage::RenderLoop);
+}
+
+#[no_mangle]
 unsafe extern "C" fn Java_dev_makepad_android_MakepadNative_onBackPressed(
     _: *mut jni_sys::JNIEnv,
     _: jni_sys::jobject,
