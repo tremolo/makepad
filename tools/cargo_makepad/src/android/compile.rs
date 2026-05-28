@@ -276,6 +276,7 @@ struct BuildPaths {
     java_file: PathBuf,
     xr_file: PathBuf,
     app_java_dir: PathBuf,
+    app_java_lib_dir: PathBuf,
     dst_unaligned_apk: PathBuf,
     dst_apk: PathBuf,
 }
@@ -1096,10 +1097,6 @@ fn prepare_build(opts: &PrepareBuildOpts<'_>) -> Result<BuildPaths, String> {
         version_code: opts.version_code,
         version_name: opts.version_name,
         debuggable: opts.debuggable,
-        app_manifest_application_xml: &fs::read_to_string(
-            build_crate_dir.join("resources/android/AndroidManifest.application.xml"),
-        )
-        .unwrap_or_default(),
     };
 
     // Custom manifest override: if `<crate>/resources/android/AndroidManifest.xml.template`
@@ -1146,6 +1143,7 @@ fn prepare_build(opts: &PrepareBuildOpts<'_>) -> Result<BuildPaths, String> {
         java_file,
         xr_file,
         app_java_dir: build_crate_dir.join("resources/android/java"),
+        app_java_lib_dir: build_crate_dir.join("resources/android/java-libs"),
         dst_unaligned_apk,
         dst_apk,
     })
@@ -1204,6 +1202,25 @@ fn collect_java_sources(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String
     Ok(())
 }
 
+fn collect_java_libraries(dir: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut libs = Vec::new();
+    if !dir.is_dir() {
+        return Ok(libs);
+    }
+    let mut entries = fs::read_dir(dir)
+        .map_err(|e| format!("failed to read app Android Java library dir {:?}: {e}", dir))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("failed to read app Android Java library dir {:?}: {e}", dir))?;
+    entries.sort_by_key(|entry| entry.path());
+    for entry in entries {
+        let path = entry.path();
+        if path.is_file() && path.extension().is_some_and(|ext| ext == "jar") {
+            libs.push(path);
+        }
+    }
+    Ok(libs)
+}
+
 fn compile_java(
     sdk_dir: &Path,
     build_paths: &BuildPaths,
@@ -1222,7 +1239,7 @@ fn compile_java(
     let makepad_java_classes_dir = &cargo_manifest_dir
         .join("src/android/java/")
         .join(makepad_package_path);
-    let java_libs = [cargo_manifest_dir.join("src/android/java-libs/zxing-core-3.5.3.jar")];
+    let java_libs = collect_java_libraries(&build_paths.app_java_lib_dir)?;
     let mut java_sources = vec![
         r_class_path.clone(),
         makepad_java_classes_dir.join("MakepadNative.java"),
@@ -1292,6 +1309,7 @@ fn compile_java(
     }
 
     let android_jar = android_jar_path(sdk_dir, urls);
+    let classpath_separator = if cfg!(windows) { ";" } else { ":" };
     let java_classpath = std::iter::once(android_jar.to_string_lossy().into_owned())
         .chain(
             java_libs
@@ -1299,7 +1317,7 @@ fn compile_java(
                 .map(|path| path.to_string_lossy().into_owned()),
         )
         .collect::<Vec<_>>()
-        .join(":");
+        .join(classpath_separator);
     let _ = rmdir(&build_paths.java_out_dir);
     mkdir(&build_paths.java_out_dir)?;
     // Force UTF-8: Chinese Windows defaults javac to GBK, and UTF-8 comments
@@ -1361,8 +1379,7 @@ fn build_dex(
 
     let d8_jar = d8_jar_path(sdk_dir, urls);
     let android_jar = android_jar_path(sdk_dir, urls);
-    let zxing_jar =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/android/java-libs/zxing-core-3.5.3.jar");
+    let java_libs = collect_java_libraries(&build_paths.app_java_lib_dir)?;
 
     let mut args: Vec<&str> = vec![
         "-cp",
@@ -1377,7 +1394,9 @@ fn build_dex(
     for class_file in &class_files {
         args.push(class_file.to_str().unwrap());
     }
-    args.push(zxing_jar.to_str().unwrap());
+    for lib in &java_libs {
+        args.push(lib.to_str().unwrap());
+    }
 
     shell_env_cap(
         &[("JAVA_HOME", (java_home.to_str().unwrap()))],
