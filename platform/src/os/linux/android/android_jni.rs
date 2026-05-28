@@ -451,11 +451,15 @@ pub unsafe fn apply_studio_env_from_activity(activity: *const std::ffi::c_void) 
     std::env::remove_var("STUDIO_BUILD");
     std::env::remove_var("STUDIO_HOST");
     std::env::remove_var("STUDIO_CRATE");
+    std::env::remove_var("MPMUX_HOST_CONTROL_TCP_LISTEN");
 
     let intent_studio_host = get_intent_string_extra(env, activity, "makepad.STUDIO_HOST")
         .filter(|v| !v.trim().is_empty());
     let intent_studio_crate = get_intent_string_extra(env, activity, "makepad.STUDIO_CRATE")
         .filter(|v| !v.trim().is_empty());
+    let intent_mpmux_host_control_listen =
+        get_intent_string_extra(env, activity, "mpmux.HOST_CONTROL_TCP_LISTEN")
+            .filter(|v| !v.trim().is_empty());
 
     if let Some(studio_host) = intent_studio_host {
         let _ = persist_string_pref(env, activity, MAKEPAD_STUDIO_HOST_PREF_KEY, &studio_host);
@@ -473,6 +477,12 @@ pub unsafe fn apply_studio_env_from_activity(activity: *const std::ffi::c_void) 
         get_persisted_string_pref(env, activity, MAKEPAD_STUDIO_CRATE_PREF_KEY)
     {
         std::env::set_var("STUDIO_CRATE", &studio_crate);
+    }
+
+    // Development-only mpmux host-control should be enabled only for an
+    // explicit launch intent; unlike Studio settings, do not persist it.
+    if let Some(listen_addr) = intent_mpmux_host_control_listen {
+        std::env::set_var("MPMUX_HOST_CONTROL_TCP_LISTEN", listen_addr);
     }
 }
 
