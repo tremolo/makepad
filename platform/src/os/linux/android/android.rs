@@ -2646,6 +2646,17 @@ impl Cx {
                 CxOsOp::CopyToClipboard(content) => unsafe {
                     android_jni::to_java_copy_to_clipboard(content);
                 },
+                CxOsOp::PasteFromClipboard => unsafe {
+                    let content = android_jni::to_java_paste_from_clipboard();
+                    if !content.is_empty() {
+                        self.call_event_handler(&Event::TextInput(TextInputEvent {
+                            input: content,
+                            replace_last: false,
+                            was_paste: true,
+                            ..Default::default()
+                        }));
+                    }
+                },
                 CxOsOp::SetPrimarySelection(_) => {}
                 CxOsOp::ShowSelectionHandles { start, end } => unsafe {
                     // Rust positions are in Makepad layout points; Android overlay APIs expect physical pixels.
