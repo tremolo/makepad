@@ -935,33 +935,21 @@ impl Cx {
                         time: self.os.timers.time_now(),
                     };
                     self.keyboard.process_key_down(key_event.clone());
-                    let is_shortcut = control || alt;
-                    // Clipboard shortcuts are consumed here and never reach the
-                    // widget as a key event.
-                    if is_shortcut && makepad_keycode == KeyCode::KeyC {
-                        self.copy_or_cut_to_clipboard(false);
-                    } else if is_shortcut && makepad_keycode == KeyCode::KeyX {
-                        self.copy_or_cut_to_clipboard(true);
-                    } else if is_shortcut && makepad_keycode == KeyCode::KeyV {
-                        let content = unsafe { android_jni::to_java_paste_from_clipboard() };
-                        if !content.is_empty() {
-                            self.call_event_handler(&Event::TextInput(TextInputEvent {
-                                input: content,
-                                replace_last: false,
-                                was_paste: true,
-                                ..Default::default()
-                            }));
-                        }
-                    } else {
-                        // Everything else reaches the widget as a KeyDown, including
-                        // other Ctrl/Alt shortcuts like Ctrl+Enter or Ctrl+A.
-                        if makepad_keycode == KeyCode::Back && !is_repeat {
-                            self.call_event_handler(&Event::BackPressed {
-                                handled: Cell::new(false),
-                            });
-                        }
-                        self.call_event_handler(&Event::KeyDown(key_event));
+
+                    // Keep Android hardware keyboard shortcuts as normal key
+                    // events. Terminal apps need raw Ctrl/Alt combinations
+                    // (Ctrl-C, Ctrl-D, Ctrl-V, etc.); consuming them here as
+                    // platform clipboard actions prevents the app from sending
+                    // the intended control sequence to the PTY. Clipboard
+                    // shortcuts remain the responsibility of higher-level
+                    // widgets/apps that know their active input context.
+                    if makepad_keycode == KeyCode::Back && !is_repeat {
+                        self.call_event_handler(&Event::BackPressed {
+                            handled: Cell::new(false),
+                        });
                     }
+
+                    self.call_event_handler(&Event::KeyDown(key_event));
                 }
             }
             FromJavaMessage::KeyUp {
