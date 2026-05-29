@@ -1062,7 +1062,7 @@ public class MakepadActivity
     private static final long MPMUX_STARTUP_UPDATE_CHECK_DELAY_MS = 2500;
     private static final long SURFACE_COVER_FADE_OUT_MS = 100;
     private static final long WARM_RESUME_SNAPSHOT_MAX_AGE_MS = 10000;
-    private static final int TASK_DESCRIPTION_BACKGROUND_COLOR = 0xFFF5F7FA;
+    private static final int TASK_DESCRIPTION_BACKGROUND_COLOR = 0xFF000000;
     private static Bitmap sWarmResumeSurfaceSnapshot;
     private static long sWarmResumeSurfaceSnapshotUptimeMs;
     private static int sWarmResumeSurfaceSnapshotOrientation = android.content.res.Configuration.ORIENTATION_UNDEFINED;
