@@ -1536,6 +1536,29 @@ pub fn llvm_readelf_path(ndk_prebuilt_root: &Path) -> Option<PathBuf> {
 /// device and must NOT be bundled.  We detect "NDK-provided, non-system" libs by
 /// checking whether the file exists in the sysroot's `usr/lib/<triple>/` directory
 /// (the base dir, not the API-level sub-directory which only contains OS stubs).
+fn strip_android_shared_lib(
+    sdk_dir: &Path,
+    host_os: HostOs,
+    urls: &AndroidSDKUrls,
+    so_path: &Path,
+) -> Result<(), String> {
+    let (_ndk_version, ndk_prebuilt_root) =
+        resolve_ndk_prebuilt_root(sdk_dir, host_os, urls.ndk_version_full)?;
+    let strip_path = ndk_prebuilt_root.join("bin/llvm-strip");
+    if !strip_path.exists() {
+        return Ok(());
+    }
+
+    let cwd = std::env::current_dir().unwrap();
+    shell_env_cap(
+        &[],
+        &cwd,
+        strip_path.to_str().unwrap(),
+        &["--strip-all", so_path.to_str().unwrap()],
+    )?;
+    Ok(())
+}
+
 fn bundle_ndk_shared_deps(
     sdk_dir: &Path,
     host_os: HostOs,
@@ -1605,6 +1628,7 @@ fn bundle_ndk_shared_deps(
         let binary_path = format!("lib/{abi}/{lib_name}");
         let dst_lib = build_paths.out_dir.join(&binary_path);
         cp(&candidate, &dst_lib, false)?;
+        strip_android_shared_lib(sdk_dir, host_os, urls, &dst_lib)?;
 
         shell_env_cap(
             &[],
@@ -1696,6 +1720,7 @@ fn bundle_local_shared_deps(
             };
 
             cp(&candidate, &dst_lib, false)?;
+            strip_android_shared_lib(sdk_dir, host_os, urls, &dst_lib)?;
             shell_env_cap(
                 &[],
                 &build_paths.out_dir,
@@ -1784,6 +1809,7 @@ fn add_rust_library(
         build_dir = Some(current_build_dir.clone());
         let dst_lib = build_paths.out_dir.join(binary_path.clone());
         cp(&src_lib, &dst_lib, false)?;
+        strip_android_shared_lib(sdk_dir, host_os, urls, &dst_lib)?;
 
         shell_env_cap(
             &[],
@@ -1835,6 +1861,7 @@ fn add_rust_library(
             let src_lib = cargo_manifest_dir.join(src_lib);
             let dst_lib = build_paths.out_dir.join(binary_path);
             cp(&src_lib, &dst_lib, false)?;
+            strip_android_shared_lib(sdk_dir, host_os, urls, &dst_lib)?;
             shell_env_cap(
                 &[],
                 &build_paths.out_dir,
