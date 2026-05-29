@@ -331,6 +331,12 @@ pub fn android_rustflags(
     compose_android_rustflags(existing, &cfg_flag, prefer_dynamic)
 }
 
+const MPMUX_ANDROID_UNUSED_FONT_ASSETS: [&str; 3] = [
+    "NewCMMath-Regular.otf",
+    "NotoSans-Regular.ttf",
+    "jetbrains_mono_variable.ttf",
+];
+
 fn main_java(url: &str) -> String {
     format!(
         r#"
@@ -1899,6 +1905,10 @@ fn add_resources(
     }
     let _ = variant;
     font_package.finish()?.print();
+
+    for unused_font in MPMUX_ANDROID_UNUSED_FONT_ASSETS {
+        assets_to_add.retain(|asset| !asset.ends_with(unused_font));
+    }
 
     let mut aapt_args = vec!["add", build_paths.dst_unaligned_apk.to_str().unwrap()];
     for asset in &assets_to_add {
