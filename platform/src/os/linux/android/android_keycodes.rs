@@ -366,7 +366,7 @@ pub(crate) fn android_to_makepad_key_code(key_code: u32) -> KeyCode {
         67 => KeyCode::Backspace,
         68 => KeyCode::Backtick,
         69 => KeyCode::Minus,
-        70 => KeyCode::Equals,
+        70 | 81 => KeyCode::Equals,
         71 => KeyCode::LBracket,
         72 => KeyCode::RBracket,
         73 => KeyCode::Backslash,

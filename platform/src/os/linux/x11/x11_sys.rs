@@ -250,7 +250,9 @@ pub const XK_Control_L: u32 = 65507;
 pub const XK_Control_R: u32 = 65508;
 
 pub const XK_equal: u32 = 61;
+pub const XK_plus: u32 = 43;
 pub const XK_minus: u32 = 45;
+pub const XK_underscore: u32 = 95;
 pub const XK_bracketleft: u32 = 91;
 pub const XK_bracketright: u32 = 93;
 pub const XK_Return: u32 = 65293;
