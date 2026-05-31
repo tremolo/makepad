@@ -2916,6 +2916,12 @@ impl Widget for TextInput {
         // focus another widget just took — every such input then cleared
         // the global focus on the same click, so a FabValueInput's editor
         // committed the old value before a keystroke could reach it.
+        //
+        // Android touch keyboards can resize/re-layout the window while the focus tap is still
+        // being processed. On some devices that produces an extra touch update outside the newly
+        // laid-out field and immediately clears focus, so the IME opens and hides again. Let Android
+        // text focus change only when another widget explicitly takes key focus; tapping empty
+        // overlay space should not dismiss the soft keyboard.
         if !self.draw_bg.area().is_empty()
             && self.draw_bg.area().is_valid(cx)
             && cx.has_key_focus(self.draw_bg.area())
@@ -2923,9 +2929,12 @@ impl Widget for TextInput {
         {
             let rect = self.draw_bg.area().rect(cx);
             let should_lose_focus = match event {
-                // Handle desktop mouse clicks
+                // Handle desktop mouse clicks.
                 Event::MouseUp(mu) => !rect.contains(mu.abs),
-                // Handle mobile touch events
+                // Ignore touch-only outside focus loss on Android; see comment above.
+                Event::TouchUpdate(_) if matches!(cx.os_type(), OsType::Android(_)) => false,
+                // Handle touch outside on other platforms from the start/stop pair, before keyboard
+                // insets or other layout changes move the focused field.
                 Event::TouchUpdate(tu) => {
                     let mut should_lose_focus = false;
                     for touch in &tu.touches {
