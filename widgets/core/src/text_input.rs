@@ -1454,8 +1454,7 @@ impl TextInput {
             ((row.origin_in_lpxs.y - row.ascender_in_lpxs) * self.draw_text.font_scale) as f64;
         let line_height =
             ((row.ascender_in_lpxs - row.descender_in_lpxs) * self.draw_text.font_scale) as f64;
-        let top_left = text_rect.pos - area_rect.pos
-            + dvec2(position.x_in_lpxs as f64, line_top)
+        let top_left = text_rect.pos - area_rect.pos + dvec2(position.x_in_lpxs as f64, line_top)
             - dvec2(self.scroll_x, self.scroll_y);
         Rect {
             pos: top_left,
@@ -1822,11 +1821,7 @@ impl TextInput {
         Ok(!initial.index_eq(self.selection))
     }
 
-    pub fn move_cursor_line_end(
-        &mut self,
-        cx: &mut Cx,
-        keep_selection: bool,
-    ) -> Result<bool, ()> {
+    pub fn move_cursor_line_end(&mut self, cx: &mut Cx, keep_selection: bool) -> Result<bool, ()> {
         let initial = self.selection;
         let position = self.cursor_to_position(self.selection.cursor)?;
         let index = {
@@ -1916,11 +1911,7 @@ impl TextInput {
         Ok(!initial.index_eq(self.selection))
     }
 
-    pub fn move_cursor_page_up(
-        &mut self,
-        cx: &mut Cx,
-        keep_selection: bool,
-    ) -> Result<bool, ()> {
+    pub fn move_cursor_page_up(&mut self, cx: &mut Cx, keep_selection: bool) -> Result<bool, ()> {
         if !self.is_multiline {
             return Ok(self.move_cursor_text_start(cx, keep_selection));
         }
@@ -1952,11 +1943,7 @@ impl TextInput {
         Ok(!initial.index_eq(self.selection))
     }
 
-    pub fn move_cursor_page_down(
-        &mut self,
-        cx: &mut Cx,
-        keep_selection: bool,
-    ) -> Result<bool, ()> {
+    pub fn move_cursor_page_down(&mut self, cx: &mut Cx, keep_selection: bool) -> Result<bool, ()> {
         if !self.is_multiline {
             return Ok(self.move_cursor_text_end(cx, keep_selection));
         }
@@ -2539,7 +2526,11 @@ impl TextInput {
         (byte_start.min(byte_end), byte_start.max(byte_end))
     }
 
-    fn find_nearest_text_range(&self, needle: &str, preferred_start: usize) -> Option<(usize, usize)> {
+    fn find_nearest_text_range(
+        &self,
+        needle: &str,
+        preferred_start: usize,
+    ) -> Option<(usize, usize)> {
         if needle.is_empty() {
             let start = preferred_start.min(self.text.len());
             return Some((start, start));
@@ -3640,8 +3631,7 @@ impl Widget for TextInput {
                 }
 
                 // Convert character indices to byte indices
-                let (byte_start, byte_end) =
-                    self.char_range_to_byte_range(event.start, event.end);
+                let (byte_start, byte_end) = self.char_range_to_byte_range(event.start, event.end);
                 let resolved_range = self.resolve_external_replace_range(
                     byte_start,
                     byte_end,
@@ -4415,10 +4405,7 @@ fn is_line_delete_modifier(modifiers: KeyModifiers) -> bool {
 
 fn uses_apple_text_boundary_modifier(modifiers: KeyModifiers) -> bool {
     (is_apple_text_platform() && modifiers.logo && !modifiers.control && !modifiers.alt)
-        || (cfg!(target_arch = "wasm32")
-            && modifiers.logo
-            && !modifiers.control
-            && !modifiers.alt)
+        || (cfg!(target_arch = "wasm32") && modifiers.logo && !modifiers.control && !modifiers.alt)
 }
 
 fn is_apple_text_platform() -> bool {

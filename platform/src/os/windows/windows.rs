@@ -1176,11 +1176,14 @@ impl Cx {
                     // Convert both corners of the caret line rect so its height is
                     // carried into native points along with the position.
                     let area_pos = area.clipped_rect(self).pos;
-                    let window_id = self.get_window_id_of(&area).unwrap_or(CxWindowPool::id_zero());
+                    let window_id = self
+                        .get_window_id_of(&area)
+                        .unwrap_or(CxWindowPool::id_zero());
                     let top_left = self.windows[window_id]
                         .layout_vec2d_to_native_points(area_pos + cursor_rect.pos);
-                    let bottom_right = self.windows[window_id]
-                        .layout_vec2d_to_native_points(area_pos + cursor_rect.pos + cursor_rect.size);
+                    let bottom_right = self.windows[window_id].layout_vec2d_to_native_points(
+                        area_pos + cursor_rect.pos + cursor_rect.size,
+                    );
                     let ime_rect = Rect {
                         pos: top_left,
                         size: bottom_right - top_left,
