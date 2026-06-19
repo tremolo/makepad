@@ -762,13 +762,16 @@ impl X11Cx {
                 CxOsOp::ShowTextIME(area, cursor_rect, _config) => {
                     let area_rect = area.clipped_rect(&cx);
                     let area_pos = area_rect.pos;
-                    let window_id = cx.get_window_id_of(&area).unwrap_or(CxWindowPool::id_zero());
+                    let window_id = cx
+                        .get_window_id_of(&area)
+                        .unwrap_or(CxWindowPool::id_zero());
                     let top_left = cx.windows[window_id]
                         .layout_vec2d_to_native_points(area_pos + cursor_rect.pos);
-                    let bottom_right = cx.windows[window_id]
-                        .layout_vec2d_to_native_points(area_pos + cursor_rect.pos + cursor_rect.size);
-                    let area_top_left = cx.windows[window_id]
-                        .layout_vec2d_to_native_points(area_rect.pos);
+                    let bottom_right = cx.windows[window_id].layout_vec2d_to_native_points(
+                        area_pos + cursor_rect.pos + cursor_rect.size,
+                    );
+                    let area_top_left =
+                        cx.windows[window_id].layout_vec2d_to_native_points(area_rect.pos);
                     let area_bottom_right = cx.windows[window_id]
                         .layout_vec2d_to_native_points(area_rect.pos + area_rect.size);
                     let ime_rect = Rect {
