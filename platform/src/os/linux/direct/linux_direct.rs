@@ -716,9 +716,7 @@ impl CxOsApi for Cx {
     }
 
     fn seconds_since_app_start(&self) -> f64 {
-        Instant::now()
-            .duration_since(self.os.start_time)
-            .as_secs_f64()
+        Self::effective_app_time_for_start_time(Some(self.os.start_time))
     }
 }
 
