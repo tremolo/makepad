@@ -1910,9 +1910,7 @@ impl CxOsApi for Cx {
     }
 
     fn seconds_since_app_start(&self) -> f64 {
-        Instant::now()
-            .duration_since(self.os.start_time.unwrap())
-            .as_secs_f64()
+        Self::effective_app_time_for_start_time(self.os.start_time)
     }
 
     fn open_url(&mut self, _url: &str, _in_place: OpenUrlInPlace) {

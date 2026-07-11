@@ -1623,6 +1623,9 @@ impl CxOsApi for Cx {
     }
 
     fn seconds_since_app_start(&self) -> f64 {
+        if let Some(override_secs) = Self::global_app_time_override_secs() {
+            return override_secs;
+        }
         (Self::monotonic_now() - self.os.start_time).max(0.0)
     }
 
