@@ -116,6 +116,8 @@ import java.util.Locale;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import org.json.JSONObject;
+import dev.mpmux.android.MpmuxUpdateManifestVerifier;
+import dev.mpmux.android.MpmuxVoiceInputBridge;
 import com.google.zxing.BarcodeFormat;
 import com.google.zxing.BinaryBitmap;
 import com.google.zxing.DecodeHintType;
@@ -1609,6 +1611,7 @@ public class MakepadActivity
     @Override
     public void onRequestPermissionsResult(int requestId, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestId, permissions, grantResults);
+        MpmuxVoiceInputBridge.onRequestPermissionsResult(requestId, permissions, grantResults);
 
         for (int i = 0; i < permissions.length; i++) {
             int status;
@@ -2340,7 +2343,7 @@ public class MakepadActivity
             ClipData clipData = clipboard.getPrimaryClip();
             if (clipData != null && clipData.getItemCount() > 0) {
                 ClipData.Item item = clipData.getItemAt(0);
-                CharSequence text = item.getText();
+                CharSequence text = item.coerceToText(this);
                 if (text != null) {
                     return text.toString();
                 }
@@ -3246,7 +3249,7 @@ public class MakepadActivity
     }
 
     private void persistMpmuxPairingUrl(String data, boolean notifyNative) {
-        if (data == null || !(data.startsWith("mpmux://sessiond-pair?") || data.startsWith("mpmux://pair?"))) {
+        if (!isMpmuxPairingQrValue(data)) {
             return;
         }
         try {
@@ -3266,6 +3269,21 @@ public class MakepadActivity
             writer.write(data);
             writer.write("\n");
         }
+    }
+
+    private boolean isMpmuxPairingQrValue(String data) {
+        if (data == null) {
+            return false;
+        }
+        String value = data.trim();
+        return value.startsWith("mpmux://sessiond-pair?")
+            || value.startsWith("mpmux://pair?")
+            || value.startsWith("mpmux://short-code-pair?")
+            || isMpmuxShortCodeValue(value);
+    }
+
+    private boolean isMpmuxShortCodeValue(String value) {
+        return value != null && value.matches("^[0-9]+-[A-Za-z0-9][A-Za-z0-9._~-]{7,}$");
     }
 
     private void notifyMpmuxPairingSubmitted() {
@@ -3445,19 +3463,28 @@ public class MakepadActivity
     }
 
     private JSONObject fetchMpmuxUpdateManifest(String manifestUrl) throws Exception {
-        HttpURLConnection connection = (HttpURLConnection) new URL(manifestUrl).openConnection();
+        String manifestBody = fetchMpmuxUpdateText(manifestUrl, "application/json", 1024 * 1024);
+        return MpmuxUpdateManifestVerifier.parseVerifiedManifest(
+            manifestUrl,
+            manifestBody,
+            (signatureUrl, maxBytes) -> fetchMpmuxUpdateText(signatureUrl, "text/plain", maxBytes)
+        );
+    }
+
+    private String fetchMpmuxUpdateText(String url, String accept, int maxBytes) throws Exception {
+        HttpURLConnection connection = (HttpURLConnection) new URL(url).openConnection();
         connection.setInstanceFollowRedirects(true);
         connection.setConnectTimeout(10000);
         connection.setReadTimeout(15000);
         connection.setRequestMethod("GET");
-        connection.setRequestProperty("Accept", "application/json");
+        connection.setRequestProperty("Accept", accept);
         try {
             int statusCode = connection.getResponseCode();
             if (statusCode < 200 || statusCode >= 300) {
-                throw new IOException("manifest HTTP status " + statusCode);
+                throw new IOException("update HTTP status " + statusCode);
             }
             try (InputStream input = connection.getInputStream()) {
-                return new JSONObject(readBoundedUtf8(input, 1024 * 1024));
+                return readBoundedUtf8(input, maxBytes);
             }
         } finally {
             connection.disconnect();
@@ -3866,7 +3893,7 @@ public class MakepadActivity
         ));
 
         TextView label = new TextView(this);
-        label.setText("Scan mpmux pairing QR\nTap to focus · Back to cancel");
+        label.setText("Scan mpmux pairing or short-code QR\nTap to focus · Back to cancel");
         label.setTextColor(Color.WHITE);
         label.setGravity(Gravity.CENTER);
         label.setBackgroundColor(0x99000000);
@@ -4084,8 +4111,8 @@ public class MakepadActivity
             if (value == null || value.isEmpty()) {
                 value = (String) barcodeClass.getField("rawValue").get(barcode);
             }
-            if (value != null && (value.startsWith("mpmux://sessiond-pair?") || value.startsWith("mpmux://pair?"))) {
-                handleMpmuxQrScannerResult(value, null, width, height);
+            if (isMpmuxPairingQrValue(value)) {
+                handleMpmuxQrScannerResult(value.trim(), null, width, height);
             }
         } catch (ClassNotFoundException err) {
             decodeMpmuxQrFrameWithZxing(data, width, height);
@@ -4122,8 +4149,8 @@ public class MakepadActivity
                 return;
             }
             String value = result.getText();
-            if (value != null && (value.startsWith("mpmux://sessiond-pair?") || value.startsWith("mpmux://pair?"))) {
-                handleMpmuxQrScannerResult(value, result.getResultPoints(), width, height);
+            if (isMpmuxPairingQrValue(value)) {
+                handleMpmuxQrScannerResult(value.trim(), result.getResultPoints(), width, height);
             }
         } catch (Exception err) {
             Log.w(LOG_TAG, "failed to decode mpmux QR frame with bundled ZXing", err);
