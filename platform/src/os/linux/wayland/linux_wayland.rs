@@ -229,6 +229,7 @@ impl WaylandCx {
     fn state_event_callback(&mut self, state: &mut WaylandState, event: XlibEvent) -> EventFlow {
         let _phase = crate::thread::ui_phase(crate::thread::UiPhase::NativeEvent);
         state.pump_pending_clipboard_read();
+        state.pump_pending_drop_read();
         if let Some(input) = state.take_pending_paste_text_input() {
             let mut cx = self.cx.borrow_mut();
             cx.call_event_handler(&Event::TextInput(crate::TextInputEvent {
