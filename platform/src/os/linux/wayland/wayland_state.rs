@@ -11,7 +11,7 @@ use std::{
     cell::{Cell, RefCell},
     os::fd::{AsFd, AsRawFd, FromRawFd},
     rc::Rc,
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 
 use wayland_client::{
@@ -323,6 +323,95 @@ struct PendingClipboardRead {
     bytes: Vec<u8>,
 }
 
+/// An external (compositor-provided) drag in progress over one of our surfaces.
+struct ExternalDrag {
+    offer: wl_data_offer::WlDataOffer,
+    serial: u32,
+    /// Last pointer position while dragging (surface-local).
+    position: Vec2d,
+    /// Mime types announced for this offer so far.
+    mime_types: Vec<String>,
+}
+
+/// Pending read of a dropped payload from an external drag.
+struct PendingDropRead {
+    fd: std::os::fd::OwnedFd,
+    bytes: Vec<u8>,
+    /// Pointer position at drop time (surface-local).
+    position: Vec2d,
+    /// Kept alive until the transfer completes; releasing it would abort the read.
+    offer: wl_data_offer::WlDataOffer,
+}
+
+/// Converts an accepted external drop payload into drag items.
+/// `text/uri-list` payloads become one `FilePath` item per file URI; payloads
+/// without any file URI are passed through as a single plain-text item.
+fn parse_dropped_text(bytes: Vec<u8>) -> Vec<DragItem> {
+    let text = String::from_utf8_lossy(&bytes);
+    let mut items: Vec<DragItem> = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(path) = file_uri_to_path(line) {
+            items.push(DragItem::FilePath {
+                path,
+                internal_id: None,
+            });
+        }
+    }
+    if items.is_empty() && !text.trim().is_empty() {
+        items.push(DragItem::String {
+            value: text.trim_end_matches(['\n', '\r']).to_owned(),
+            internal_id: None,
+        });
+    }
+    items
+}
+
+/// Converts a `file://` URI to a local filesystem path.
+fn file_uri_to_path(uri: &str) -> Option<String> {
+    let rest = uri.strip_prefix("file://")?;
+    // Everything before the first '/' is the host; local files use an empty host
+    // (file:///path) or "localhost". The path itself starts at that first '/'.
+    let (host, path_part) = match rest.find('/') {
+        Some(index) => rest.split_at(index),
+        None => return None,
+    };
+    if !host.is_empty() && host != "localhost" {
+        return None;
+    }
+    Some(percent_decode(path_part))
+}
+
+fn percent_decode(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(hi), Some(lo)) = (hex_value(bytes[i + 1]), hex_value(bytes[i + 2])) {
+                out.push(hi * 16 + lo);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
 pub(crate) struct WaylandState {
     pub(crate) compositor: Option<wl_compositor::WlCompositor>,
     pub(crate) subcompositor: Option<wl_subcompositor::WlSubcompositor>,
@@ -335,6 +424,8 @@ pub(crate) struct WaylandState {
     pub(crate) clipboard_offer: Option<ClipboardOffer>,
     pub(crate) data_offers: Vec<ClipboardOffer>,
     pending_clipboard_read: Option<PendingClipboardRead>,
+    external_drag: Option<ExternalDrag>,
+    pending_drop_read: Option<PendingDropRead>,
     pending_paste_text_input: Option<String>,
     /// Queued clipboard copy content waiting for a serial from keyboard/pointer.
     pub(crate) pending_clipboard_copy: Option<String>,
@@ -464,6 +555,8 @@ impl WaylandState {
             clipboard_offer: None,
             data_offers: Vec::new(),
             pending_clipboard_read: None,
+            external_drag: None,
+            pending_drop_read: None,
             pending_paste_text_input: None,
             pending_clipboard_copy: None,
             clipboard_text: String::new(),
@@ -1200,7 +1293,7 @@ impl Dispatch<wl_data_device::WlDataDevice, ()> for WaylandState {
         _proxy: &wl_data_device::WlDataDevice,
         event: wl_data_device::Event,
         _: &(),
-        _conn: &Connection,
+        conn: &Connection,
         _qhandle: &QueueHandle<Self>,
     ) {
         match event {
@@ -1228,6 +1321,31 @@ impl Dispatch<wl_data_device::WlDataDevice, ()> for WaylandState {
                     }
                 });
                 state.data_offers.clear();
+            }
+            wl_data_device::Event::Enter { serial, x, y, id, .. } => {
+                // An external drag entered the surface. Track it so we can answer
+                // the drop with a `DropEvent` carrying the dragged items.
+                if let Some(offer) = id {
+                    state.external_drag = Some(ExternalDrag {
+                        offer,
+                        serial,
+                        position: dvec2(x, y),
+                        mime_types: Vec::new(),
+                    });
+                }
+            }
+            wl_data_device::Event::Motion { x, y, .. } => {
+                if let Some(drag) = state.external_drag.as_mut() {
+                    drag.position = dvec2(x, y);
+                }
+            }
+            wl_data_device::Event::Drop => {
+                state.begin_external_drop(conn);
+            }
+            wl_data_device::Event::Leave => {
+                if state.external_drag.take().is_some() {
+                    state.do_callback(XlibEvent::DragEnd);
+                }
             }
             _ => {}
         }
@@ -1262,6 +1380,11 @@ impl Dispatch<wl_data_offer::WlDataOffer, ()> for WaylandState {
                         && !active_offer.mime_types.iter().any(|m| m == &mime_type)
                     {
                         active_offer.mime_types.push(mime_type.clone());
+                    }
+                }
+                if let Some(drag) = state.external_drag.as_mut() {
+                    if drag.offer == *proxy && !drag.mime_types.iter().any(|m| m == &mime_type) {
+                        drag.mime_types.push(mime_type.clone());
                     }
                 }
                 if let Some(offer) = state
@@ -2396,6 +2519,132 @@ impl WaylandState {
         }
     }
 
+    /// Accepts the external drag and starts reading its payload. The data
+    /// arrives through a pipe; [`Self::pump_pending_drop_read`] collects it
+    /// until EOF and then dispatches the drop event.
+    fn begin_external_drop(&mut self, conn: &Connection) {
+        let Some(drag) = self.external_drag.take() else {
+            return;
+        };
+        let Some(mime_type) = drag
+            .mime_types
+            .iter()
+            .find(|mime| mime.as_str() == "text/uri-list" || mime.as_str() == "text/plain")
+            .cloned()
+        else {
+            // Nothing in this offer is usable for us.
+            self.do_callback(XlibEvent::DragEnd);
+            return;
+        };
+        drag.offer.accept(drag.serial, Some(mime_type.clone()));
+        let mut pipe_fds = [0; 2];
+        if unsafe { libc_sys::pipe(pipe_fds.as_mut_ptr()) } != 0 {
+            self.do_callback(XlibEvent::DragEnd);
+            return;
+        }
+        let read_fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(pipe_fds[0]) };
+        let read_raw_fd = read_fd.as_raw_fd();
+        let write_fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(pipe_fds[1]) };
+        drag.offer.receive(mime_type, write_fd.as_fd());
+        drop(write_fd);
+        let _ = conn.flush();
+
+        unsafe {
+            let flags = libc_sys::fcntl(read_raw_fd, libc_sys::F_GETFL, 0);
+            if flags >= 0 {
+                let _ = libc_sys::fcntl(
+                    read_raw_fd,
+                    libc_sys::F_SETFL,
+                    flags | libc_sys::O_NONBLOCK,
+                );
+            }
+        }
+        self.pending_drop_read = Some(PendingDropRead {
+            position: drag.position,
+            offer: drag.offer,
+            fd: read_fd,
+            bytes: Vec::new(),
+        });
+        self.pump_pending_drop_read();
+    }
+
+    /// Reads a pending external drop payload. Called on every event-loop pass
+    /// (see `state_event_callback`) and right after [`Self::begin_external_drop`].
+    pub(crate) fn pump_pending_drop_read(&mut self) {
+        let mut pending = match self.pending_drop_read.take() {
+            Some(pending) => pending,
+            None => return,
+        };
+
+        let read_raw_fd = pending.fd.as_raw_fd();
+        let mut readfds = unsafe { std::mem::zeroed::<libc_sys::fd_set>() };
+        let mut timeout = libc_sys::timeval {
+            tv_sec: 0,
+            tv_usec: 0,
+        };
+        unsafe {
+            libc_sys::FD_ZERO(&mut readfds);
+            libc_sys::FD_SET(read_raw_fd, &mut readfds);
+        }
+        let ready = unsafe {
+            libc_sys::select(
+                read_raw_fd + 1,
+                &mut readfds,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut timeout,
+            )
+        };
+        if ready <= 0 {
+            self.pending_drop_read = Some(pending);
+            return;
+        }
+
+        loop {
+            let mut chunk = [0u8; 4096];
+            let count = unsafe {
+                libc_sys::read(
+                    read_raw_fd,
+                    chunk.as_mut_ptr() as *mut std::os::raw::c_void,
+                    chunk.len(),
+                )
+            };
+            if count > 0 {
+                pending.bytes.extend_from_slice(&chunk[..count as usize]);
+                continue;
+            }
+            if count < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::WouldBlock
+            {
+                // No data yet; keep pumping on the next pass.
+                self.pending_drop_read = Some(pending);
+                return;
+            }
+            // EOF (or read error): dispatch the drop with what we got.
+            let bytes = std::mem::take(&mut pending.bytes);
+            let position = pending.position;
+            self.dispatch_external_drop(bytes, position);
+        }
+    }
+
+    fn dispatch_external_drop(&mut self, bytes: Vec<u8>, position: Vec2d) {
+        let Some(window_id) = self.pointer_window else {
+            return;
+        };
+        let items = parse_dropped_text(bytes);
+        if items.is_empty() {
+            return;
+        }
+        self.do_callback(XlibEvent::Drop(
+            window_id,
+            DropEvent {
+                modifiers: self.modifiers,
+                handled: Arc::new(Mutex::new(false)),
+                abs: position,
+                items: Arc::new(items),
+            },
+        ));
+    }
+
     pub(crate) fn available(&self) -> bool {
         self.compositor.is_some() && self.wm_base.is_some()
     }
@@ -2871,5 +3120,63 @@ mod tests {
             // Every edge must survive a round trip through the mask it degrades with.
             assert_eq!(available_resize_edge(edge, 0), Some(edge));
         }
+    }
+}
+
+#[cfg(test)]
+mod external_drop_tests {
+    use super::*;
+
+    #[test]
+    fn percent_decodes_hex_escapes() {
+        assert_eq!(percent_decode("/tmp/a%20b"), "/tmp/a b");
+        assert_eq!(percent_decode("/tmp/%C3%BCmlaut"), "/tmp/ümlaut");
+        assert_eq!(percent_decode("/tmp/no-escapes"), "/tmp/no-escapes");
+        // Malformed escapes pass through unchanged.
+        assert_eq!(percent_decode("/tmp/%ZZ"), "/tmp/%ZZ");
+    }
+
+    #[test]
+    fn file_uri_paths_are_converted() {
+        assert_eq!(file_uri_to_path("file:///tmp/a b.txt").as_deref(), Some("/tmp/a b.txt"));
+        assert_eq!(
+            file_uri_to_path("file://localhost/home/u/x.md").as_deref(),
+            Some("/home/u/x.md")
+        );
+        // Non-local or non-file URIs are rejected.
+        assert_eq!(file_uri_to_path("https://example.com/x"), None);
+        assert_eq!(file_uri_to_path("file://remotehost/tmp/x"), None);
+        assert_eq!(file_uri_to_path("file:tmp/x"), None);
+    }
+
+    #[test]
+    fn uri_list_becomes_file_path_items() {
+        let bytes = "file:///tmp/a.txt\nfile:///tmp/b%20c.txt\n".as_bytes().to_vec();
+        let items = parse_dropped_text(bytes);
+        assert_eq!(items.len(), 2);
+        match &items[0] {
+            DragItem::FilePath { path, .. } => assert_eq!(path, "/tmp/a.txt"),
+            other => panic!("expected FilePath, got {other:?}"),
+        }
+        match &items[1] {
+            DragItem::FilePath { path, .. } => assert_eq!(path, "/tmp/b c.txt"),
+            other => panic!("expected FilePath, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plain_text_falls_back_to_string_item() {
+        let items = parse_dropped_text(b"hello world\n".to_vec());
+        assert_eq!(items.len(), 1);
+        match &items[0] {
+            DragItem::String { value, .. } => assert_eq!(value, "hello world"),
+            other => panic!("expected String, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn empty_payload_yields_no_items() {
+        assert!(parse_dropped_text(Vec::new()).is_empty());
+        assert!(parse_dropped_text(b"\n\n".to_vec()).is_empty());
     }
 }
