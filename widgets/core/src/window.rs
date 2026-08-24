@@ -183,7 +183,7 @@ script_mod! {
                     draw_bg.button_type: DesktopButtonType.WindowsMin
                     width: 46 height: 29
                     draw_bg +: {
-                        color: theme.color_label_inner, color_hover: #000, color_down: #000
+                        color: #F2F3F5FF, color_hover: #000, color_down: #000
                         bg_color_hover: #E9E9E9, bg_color_down: #CCCCCC
                     }
                 }
@@ -191,7 +191,7 @@ script_mod! {
                     draw_bg.button_type: DesktopButtonType.WindowsMax
                     width: 46 height: 29
                     draw_bg +: {
-                        color: theme.color_label_inner, color_hover: #000, color_down: #000
+                        color: #F2F3F5FF, color_hover: #000, color_down: #000
                         bg_color_hover: #E9E9E9, bg_color_down: #CCCCCC
                     }
                 }
@@ -199,7 +199,7 @@ script_mod! {
                     draw_bg.button_type: DesktopButtonType.WindowsClose
                     width: 46 height: 29
                     draw_bg +: {
-                        color: theme.color_label_inner, color_hover: #FFF, color_down: #FFF
+                        color: #F2F3F5FF, color_hover: #FFF, color_down: #FFF
                         bg_color_hover: #E81123, bg_color_down: #F1707A
                     }
                 }
