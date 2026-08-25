@@ -239,6 +239,12 @@ impl WaylandCx {
                 ..Default::default()
             }));
         }
+        if let Some((window_id, mut e)) = state.take_pending_external_drop() {
+            let mut cx = self.cx.borrow_mut();
+            cx.dpi_override_scale(&mut e.abs, window_id);
+            cx.call_event_handler(&Event::Drop(e));
+            cx.drag_drop.cycle_drag();
+        }
         if let EventFlow::Exit = self.handle_platform_ops(state) {
             let mut cx = self.cx.borrow_mut();
             cx.call_event_handler(&Event::Shutdown);

@@ -9,6 +9,7 @@ use crate::{
 };
 use std::{
     cell::{Cell, RefCell},
+    collections::HashMap,
     os::fd::{AsFd, AsRawFd, FromRawFd},
     rc::Rc,
     sync::{Arc, Mutex},
@@ -23,6 +24,7 @@ use wayland_client::{
         wl_region, wl_registry, wl_seat, wl_shm, wl_shm_pool, wl_subcompositor, wl_subsurface,
         wl_surface,
     },
+    backend::ObjectId,
     Connection, Dispatch, Proxy, QueueHandle, WEnum,
 };
 use wayland_protocols::{
@@ -333,6 +335,23 @@ struct ExternalDrag {
     mime_types: Vec<String>,
 }
 
+/// Per-offer bookkeeping for the data device action protocol (Wayland v3+).
+/// The source advertises its actions (`source-actions`), the compositor selects one
+/// (`action`), and the destination must answer with `set_actions`. GTK-based drag
+/// sources leave the negotiated action at "ask" until the destination answers, and
+/// an unresolved drag is never finalized: no `wl_data_device.drop` is delivered.
+/// The state is keyed by offer id on [`WaylandState`] so it survives `selection`
+/// events that clear [`WaylandState::data_offers`].
+#[derive(Clone, Copy, Default)]
+struct OfferNegotiation {
+    /// Actions offered by the source (raw `DndAction` bits), when known.
+    source_actions: Option<u32>,
+    /// Last selected action reported by the compositor (raw bits), when known.
+    last_action: Option<u32>,
+    /// We already answered this offer with `set_actions`.
+    answered: bool,
+}
+
 /// Pending read of a dropped payload from an external drag.
 struct PendingDropRead {
     fd: std::os::fd::OwnedFd,
@@ -341,6 +360,9 @@ struct PendingDropRead {
     position: Vec2d,
     /// Kept alive until the transfer completes; releasing it would abort the read.
     offer: wl_data_offer::WlDataOffer,
+    /// The action protocol negotiated an explicit action for this drop, so the
+    /// completed transfer is reported with `wl_data_offer.finish` (v3+).
+    finish_on_complete: bool,
 }
 
 /// Converts an accepted external drop payload into drag items.
@@ -426,6 +448,12 @@ pub(crate) struct WaylandState {
     pending_clipboard_read: Option<PendingClipboardRead>,
     external_drag: Option<ExternalDrag>,
     pending_drop_read: Option<PendingDropRead>,
+    /// A drop payload that completed while an event callback was running. It is
+    /// delivered on the next `state_event_callback` pass instead of through
+    /// [`Self::do_callback`], which would re-enter the active `WaylandCx` borrow
+    /// and panic.
+    pending_external_drop: Option<(WindowId, DropEvent)>,
+    offer_negotiations: HashMap<ObjectId, OfferNegotiation>,
     pending_paste_text_input: Option<String>,
     /// Queued clipboard copy content waiting for a serial from keyboard/pointer.
     pub(crate) pending_clipboard_copy: Option<String>,
@@ -557,6 +585,8 @@ impl WaylandState {
             pending_clipboard_read: None,
             external_drag: None,
             pending_drop_read: None,
+            pending_external_drop: None,
+            offer_negotiations: HashMap::new(),
             pending_paste_text_input: None,
             pending_clipboard_copy: None,
             clipboard_text: String::new(),
@@ -1325,12 +1355,28 @@ impl Dispatch<wl_data_device::WlDataDevice, ()> for WaylandState {
             wl_data_device::Event::Enter { serial, x, y, id, .. } => {
                 // An external drag entered the surface. Track it so we can answer
                 // the drop with a `DropEvent` carrying the dragged items.
+                // Mime announcements for this offer arrive before enter; reuse them.
                 if let Some(offer) = id {
+                    let mime_types = state
+                        .data_offers
+                        .iter()
+                        .find(|entry| entry.offer == offer)
+                        .map(|entry| entry.mime_types.clone())
+                        .unwrap_or_default();
+                    // Give the source immediate acceptance feedback so it shows a
+                    // copy-style cursor while dragging over us.
+                    if let Some(mime) = mime_types
+                        .iter()
+                        .find(|mime| mime.as_str() == "text/uri-list")
+                        .or_else(|| mime_types.iter().find(|mime| mime.as_str() == "text/plain"))
+                    {
+                        offer.accept(serial, Some(mime.clone()));
+                    }
                     state.external_drag = Some(ExternalDrag {
                         offer,
                         serial,
                         position: dvec2(x, y),
-                        mime_types: Vec::new(),
+                        mime_types,
                     });
                 }
             }
@@ -1346,6 +1392,8 @@ impl Dispatch<wl_data_device::WlDataDevice, ()> for WaylandState {
                 if state.external_drag.take().is_some() {
                     state.do_callback(XlibEvent::DragEnd);
                 }
+                // Drag ended (dropped or cancelled); negotiation state is per-drag.
+                state.offer_negotiations.clear();
             }
             _ => {}
         }
@@ -1394,6 +1442,48 @@ impl Dispatch<wl_data_offer::WlDataOffer, ()> for WaylandState {
                 {
                     if !offer.mime_types.iter().any(|m| m == &mime_type) {
                         offer.mime_types.push(mime_type);
+                    }
+                }
+            }
+            wl_data_offer::Event::SourceActions { source_actions } => {
+                if let WEnum::Value(source_actions) = source_actions {
+                    let bits = u32::from(source_actions);
+                    let copy_bits = u32::from(wl_data_device_manager::DndAction::Copy);
+                    let answer = {
+                        let entry = state
+                            .offer_negotiations
+                            .entry(proxy.id())
+                            .or_default();
+                        entry.source_actions = Some(bits);
+                        let answer = !entry.answered && bits & copy_bits != 0;
+                        if answer {
+                            entry.answered = true;
+                        }
+                        answer
+                    };
+                    if answer {
+                        state.answer_drag_actions(proxy);
+                    }
+                }
+            }
+            wl_data_offer::Event::Action { dnd_action } => {
+                if let WEnum::Value(dnd_action) = dnd_action {
+                    let bits = u32::from(dnd_action);
+                    let ask_bits = u32::from(wl_data_device_manager::DndAction::Ask);
+                    let answer = {
+                        let entry = state
+                            .offer_negotiations
+                            .entry(proxy.id())
+                            .or_default();
+                        entry.last_action = Some(bits);
+                        let answer = !entry.answered && bits == ask_bits;
+                        if answer {
+                            entry.answered = true;
+                        }
+                        answer
+                    };
+                    if answer {
+                        state.answer_drag_actions(proxy);
                     }
                 }
             }
@@ -2519,6 +2609,17 @@ impl WaylandState {
         }
     }
 
+    /// Answers the drag's action negotiation: we support completing the drop
+    /// as a copy. GTK-based sources keep the negotiated action at "ask" until
+    /// the destination answers, and the compositor only sends `drop` once the
+    /// operation is resolved (see the `wl_data_offer.action` protocol docs).
+    fn answer_drag_actions(&mut self, offer: &wl_data_offer::WlDataOffer) {
+        if offer.version() >= 3 {
+            let copy = wl_data_device_manager::DndAction::Copy;
+            let _ = offer.set_actions(copy, copy);
+        }
+    }
+
     /// Accepts the external drag and starts reading its payload. The data
     /// arrives through a pipe; [`Self::pump_pending_drop_read`] collects it
     /// until EOF and then dispatches the drop event.
@@ -2526,8 +2627,20 @@ impl WaylandState {
         let Some(drag) = self.external_drag.take() else {
             return;
         };
-        let Some(mime_type) = drag
-            .mime_types
+        // Mime list fallback: re-check the offer registry in case announcements
+        // were recorded there instead of on the drag state.
+        let mut mime_types = drag.mime_types;
+        if mime_types.is_empty() {
+            if let Some(entry) = self.data_offers.iter().find(|entry| entry.offer == drag.offer) {
+                mime_types = entry.mime_types.clone();
+            }
+        }
+        let negotiation = self
+            .offer_negotiations
+            .get(&drag.offer.id())
+            .copied()
+            .unwrap_or_default();
+        let Some(mime_type) = mime_types
             .iter()
             .find(|mime| mime.as_str() == "text/uri-list" || mime.as_str() == "text/plain")
             .cloned()
@@ -2559,11 +2672,13 @@ impl WaylandState {
                 );
             }
         }
+        let finish_on_complete = negotiation.last_action.is_some() && drag.offer.version() >= 3;
         self.pending_drop_read = Some(PendingDropRead {
             position: drag.position,
             offer: drag.offer,
             fd: read_fd,
             bytes: Vec::new(),
+            finish_on_complete,
         });
         self.pump_pending_drop_read();
     }
@@ -2620,9 +2735,16 @@ impl WaylandState {
                 return;
             }
             // EOF (or read error): dispatch the drop with what we got.
+            if pending.finish_on_complete {
+                // Action-protocol negotiation happened for this drag: tell the
+                // source the transfer completed. Only `destroy` may follow,
+                // which the proxy drop below performs.
+                let _ = pending.offer.finish();
+            }
             let bytes = std::mem::take(&mut pending.bytes);
             let position = pending.position;
             self.dispatch_external_drop(bytes, position);
+            break;
         }
     }
 
@@ -2634,7 +2756,10 @@ impl WaylandState {
         if items.is_empty() {
             return;
         }
-        self.do_callback(XlibEvent::Drop(
+        // Queue instead of calling `do_callback` directly: this path is usually
+        // reached from the pump at the top of a running event callback, and a
+        // nested `do_callback` would re-enter the active `WaylandCx` borrow.
+        self.pending_external_drop = Some((
             window_id,
             DropEvent {
                 modifiers: self.modifiers,
@@ -2643,6 +2768,12 @@ impl WaylandState {
                 items: Arc::new(items),
             },
         ));
+    }
+
+    /// Takes the completed external drop waiting for delivery. Must only be called
+    /// from a non-re-entrant event context (the top of `state_event_callback`).
+    pub(crate) fn take_pending_external_drop(&mut self) -> Option<(WindowId, DropEvent)> {
+        self.pending_external_drop.take()
     }
 
     pub(crate) fn available(&self) -> bool {
