@@ -3444,9 +3444,16 @@ public class MakepadActivity
             request.setMimeType("application/vnd.android.package-archive");
             request.setAllowedNetworkTypes(DownloadManager.Request.NETWORK_WIFI | DownloadManager.Request.NETWORK_MOBILE);
             request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
-            request.setDestinationInExternalFilesDir(this, Environment.DIRECTORY_DOWNLOADS, fileName);
-
+            if (getExternalFilesDir(null) == null) {
+                Toast.makeText(this, "External storage is unavailable right now; restart the app and try again", Toast.LENGTH_LONG).show();
+                return;
+            }
             try {
+                // Some Samsung FUSE storage builds return null for app-storage
+                // subdirectory lookups (e.g. "Download"), which makes this call
+                // throw IllegalStateException. Targeting the app files directory
+                // root (null type) avoids that on affected devices.
+                request.setDestinationInExternalFilesDir(this, null, fileName);
                 mMpmuxUpdateExpectedSha256 = expectedSha256.toLowerCase(Locale.ROOT);
                 mMpmuxUpdateVersionLabel = safeVersion;
                 registerMpmuxUpdateDownloadReceiver();
