@@ -3305,8 +3305,16 @@ public class MakepadActivity
         }
         mMpmuxStartupUpdateCheckScheduled = true;
         mHandler.postDelayed(() -> {
-            if (!mIsResumed || hasPendingMpmuxUpdateDownload()) {
-                mMpmuxStartupUpdateCheckScheduled = false;
+            mMpmuxStartupUpdateCheckScheduled = false;
+            if (!mIsResumed) {
+                return;
+            }
+            if (hasPendingMpmuxUpdateDownload()) {
+                // Resume or settle a leftover record: re-runs verification for a
+                // finished download, re-arms the receiver for an active one, and
+                // removes stale records left behind by older builds so they stop
+                // showing up as endless update downloads.
+                resumePendingMpmuxUpdateDownload();
                 return;
             }
             checkMpmuxSelfUpdate(MPMUX_DEFAULT_UPDATE_MANIFEST_URL, false);
@@ -3429,10 +3437,21 @@ public class MakepadActivity
                 Toast.makeText(this, "Android DownloadManager is unavailable", Toast.LENGTH_LONG).show();
                 return;
             }
-            if (hasPendingMpmuxUpdateDownload()) {
+            SharedPreferences prefs = getSharedPreferences(MPMUX_UPDATE_PREFS, MODE_PRIVATE);
+            long pendingDownloadId = Math.max(
+                mMpmuxUpdateDownloadId,
+                prefs.getLong(MPMUX_UPDATE_PREF_DOWNLOAD_ID, -1)
+            );
+            if (pendingDownloadId > 0 && mpmuxUpdateDownloadActive(downloadManager, pendingDownloadId)) {
                 resumePendingMpmuxUpdateDownload();
                 Toast.makeText(this, "mpmux update download is already in progress", Toast.LENGTH_LONG).show();
                 return;
+            }
+            if (pendingDownloadId > 0) {
+                // A settled record (finished or failed on a previous run) must not
+                // shadow this new download: remove it and start fresh.
+                removeMpmuxUpdateDownloadRecord(downloadManager, pendingDownloadId);
+                clearMpmuxUpdateDownloadState();
             }
 
             clearMpmuxUpdateDownloadReceiver();
@@ -3533,15 +3552,49 @@ public class MakepadActivity
             mMpmuxUpdateExpectedSha256 = expectedSha256.toLowerCase(Locale.ROOT);
             mMpmuxUpdateVersionLabel = versionLabel == null ? "update" : versionLabel;
             handleMpmuxUpdateDownloadComplete(downloadId);
-        } else if (status == DownloadManager.STATUS_PENDING
-            || status == DownloadManager.STATUS_RUNNING
-            || status == DownloadManager.STATUS_PAUSED) {
+        } else if (mpmuxUpdateDownloadActive(downloadManager, downloadId)) {
             mMpmuxUpdateDownloadId = downloadId;
             mMpmuxUpdateExpectedSha256 = expectedSha256.toLowerCase(Locale.ROOT);
             mMpmuxUpdateVersionLabel = versionLabel == null ? "update" : versionLabel;
             registerMpmuxUpdateDownloadReceiver();
         } else {
+            removeMpmuxUpdateDownloadRecord(downloadManager, downloadId);
             clearMpmuxUpdateDownloadState();
+        }
+    }
+
+    private boolean mpmuxUpdateDownloadActive(DownloadManager downloadManager, long downloadId) {
+        int status = mpmuxUpdateDownloadStatus(downloadManager, downloadId);
+        return status == DownloadManager.STATUS_PENDING
+            || status == DownloadManager.STATUS_RUNNING
+            || status == DownloadManager.STATUS_PAUSED;
+    }
+
+    private void removeMpmuxUpdateDownloadRecord(DownloadManager downloadManager, long downloadId) {
+        try {
+            DownloadManager.Query query = new DownloadManager.Query().setFilterById(downloadId);
+            try (Cursor cursor = downloadManager.query(query)) {
+                if (cursor != null && cursor.moveToFirst()) {
+                    int localIndex = cursor.getColumnIndex(DownloadManager.COLUMN_LOCAL_FILENAME);
+                    if (localIndex >= 0) {
+                        String localFilename = cursor.getString(localIndex);
+                        if (localFilename != null) {
+                            File localFile = new File(localFilename);
+                            if (localFile.exists() && !localFile.delete()) {
+                                localFile.deleteOnExit();
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        try {
+            // DownloadManager.remove(long...) is available since API 11, while
+            // removeDownloadIds(long[]) requires API 24 (older compile SDKs).
+            downloadManager.remove(new long[] { downloadId });
+        } catch (Exception err) {
+            Log.w(LOG_TAG, "failed to remove stale mpmux update download", err);
         }
     }
 
@@ -3584,6 +3637,7 @@ public class MakepadActivity
 
         if (!mpmuxUpdateDownloadSucceeded(downloadManager, downloadId)) {
             Toast.makeText(this, "mpmux update download failed", Toast.LENGTH_LONG).show();
+            removeMpmuxUpdateDownloadRecord(downloadManager, downloadId);
             clearMpmuxUpdateDownloadState();
             return;
         }
@@ -3593,6 +3647,7 @@ public class MakepadActivity
             if (!actualSha256.equalsIgnoreCase(mMpmuxUpdateExpectedSha256)) {
                 Log.w(LOG_TAG, "mpmux update SHA-256 mismatch; refusing install");
                 Toast.makeText(this, "Update verification failed", Toast.LENGTH_LONG).show();
+                removeMpmuxUpdateDownloadRecord(downloadManager, downloadId);
                 clearMpmuxUpdateDownloadState();
                 return;
             }
@@ -3600,12 +3655,14 @@ public class MakepadActivity
             if (validationError != null) {
                 Log.w(LOG_TAG, "mpmux update APK validation failed: " + validationError);
                 Toast.makeText(this, validationError, Toast.LENGTH_LONG).show();
+                removeMpmuxUpdateDownloadRecord(downloadManager, downloadId);
                 clearMpmuxUpdateDownloadState();
                 return;
             }
         } catch (Exception err) {
             Log.w(LOG_TAG, "failed to verify mpmux update", err);
             Toast.makeText(this, "Update verification failed", Toast.LENGTH_LONG).show();
+            removeMpmuxUpdateDownloadRecord(downloadManager, downloadId);
             clearMpmuxUpdateDownloadState();
             return;
         }
