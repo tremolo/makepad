@@ -1387,6 +1387,15 @@ fn build_dex(
     let android_jar = android_jar_path(sdk_dir, urls);
     let java_libs = collect_java_libraries(&build_paths.app_java_lib_dir)?;
 
+    // D8 must be told the API level the app declares. Without `--min-api` it
+    // assumes API 1 and desugars every default interface method into an
+    // `<Interface>$-CC` companion class. Companion classes for *framework*
+    // interfaces do not exist on ART, so the first dispatch of a default method
+    // an implementation does not override fails with `NoClassDefFoundError`.
+    // `urls.sdk_version` is the effective `android:minSdkVersion`, already
+    // adjusted for a per-app override by the caller.
+    let min_api = urls.sdk_version.to_string();
+
     let mut args: Vec<&str> = vec![
         "-cp",
         d8_jar.to_str().unwrap(),
@@ -1395,6 +1404,8 @@ fn build_dex(
         android_jar.to_str().unwrap(),
         "--output",
         build_paths.out_dir.to_str().unwrap(),
+        "--min-api",
+        &min_api,
     ];
 
     for class_file in &class_files {
