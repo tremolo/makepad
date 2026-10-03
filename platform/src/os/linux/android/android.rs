@@ -3224,6 +3224,10 @@ impl Cx {
                 CxOsOp::SaveFolderDialog(settings) => {
                     android_file_dialog::open_save_folder_dialog(settings);
                 }
+                // An Android activity has no window title to set. Apps that
+                // mirror a terminal title update it often, and logging each
+                // one as unimplemented flooded logcat.
+                CxOsOp::SetWindowTitle(..) => {}
                 e => {
                     crate::error!("Not implemented on this platform: CxOsOp::{:?}", e);
                 }
