@@ -2205,7 +2205,12 @@ impl Widget for Window {
                 if *window_id == self.window.window_id() {
                     self.has_focus = true;
                     self.focus_known = true;
-                    cx.set_key_focus(self.last_known_area);
+                    // The press that focused the window may already have
+                    // focused a widget (X11 delivers focus after the click);
+                    // restoring the remembered area would undo that.
+                    if cx.key_focus().is_empty() {
+                        cx.set_key_focus(self.last_known_area);
+                    }
                 }
 
                 *window_id != self.window.window_id()
