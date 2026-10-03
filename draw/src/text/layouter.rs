@@ -897,6 +897,9 @@ fn is_no_break_after_char(c: char) -> bool {
     matches!(
         c,
         '(' | '[' | '{'
+        // Prefixes that UAX#14 keeps with the following word (class AL),
+        // but word bounds split off: hashtags and mentions.
+        | '#' | '@'
         // Opening quotation marks
         | '\u{2018}' // '
         | '\u{201C}' // \u{201c}
@@ -1520,6 +1523,14 @@ mod tests {
         assert_eq!(
             merged_segments("(News Hello): world"),
             vec!["(News", " ", "Hello):", " ", "world"]
+        );
+    }
+
+    #[test]
+    fn hashtag_and_mention_prefixes_stay_with_their_word() {
+        assert_eq!(
+            merged_segments("#mpmux  #code-review @lutz"),
+            vec!["#mpmux", "  ", "#code", "-", "review", " ", "@lutz"]
         );
     }
 
