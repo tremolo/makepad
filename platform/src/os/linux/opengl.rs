@@ -1743,9 +1743,14 @@ impl GlShader {
             // Changes whenever the key hasher does, so `write_program_cache` also deletes
             // the binaries an older key left behind.
             let key_marker = key_hasher.hash_one("shader");
+            // MPMUX PATCH: the build number is free text set by the ROM. On a custom
+            // ROM it contained `/`, `|`, and spaces, so every cache write failed and
+            // each launch recompiled every shader. Hash it; a system update still
+            // changes the name.
+            let build_hash = live_id!(build).str_append(&params.build_number);
             format!(
-                "_av{}_bn{}_gl{:08x}_k{:08x}.bin",
-                params.android_version, params.build_number, driver_hash.0, key_marker
+                "_av{}_bn{:08x}_gl{:08x}_k{:08x}.bin",
+                params.android_version, build_hash.0, driver_hash.0, key_marker
             )
         });
         format!("{}/shader_{:08x}{}", cache_dir, shader_hash, suffix)
