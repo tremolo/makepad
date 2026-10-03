@@ -44,6 +44,7 @@ pub(crate) static STUDIO_WEB_SOCKET_CONNECTED: AtomicBool = AtomicBool::new(fals
 pub(crate) static STUDIO_STDOUT_MODE: AtomicBool = AtomicBool::new(false);
 pub(crate) static LOCAL_PROFILE_CAPTURE_ENABLED: AtomicBool = AtomicBool::new(false);
 pub(crate) static CONTROL_CHANNEL: Mutex<Option<Receiver<StudioToApp>>> = Mutex::new(None);
+static CONTROL_SENDER: Mutex<Option<Sender<StudioToApp>>> = Mutex::new(None);
 pub(crate) static LOCAL_PROFILE_SAMPLES: Mutex<Vec<LocalProfileSample>> = Mutex::new(Vec::new());
 const LOCAL_PROFILE_SAMPLE_BUFFER_LIMIT: usize = 16_384;
 const STUDIO_SOCKET_ID: u64 = 0;
@@ -209,8 +210,29 @@ impl Cx {
     /// Set a control channel for receiving StudioToApp messages.
     /// Messages are polled by the event loop and dispatched as events.
     /// The sender should call `SignalToUI::set_ui_signal()` after sending.
+    ///
+    /// This replaces the receiver, so any earlier sender stops being heard.
+    /// Producers that must coexist should use [`Cx::control_channel_sender`].
     pub fn set_control_channel(rx: Receiver<StudioToApp>) {
+        *CONTROL_SENDER.lock().unwrap() = None;
         *CONTROL_CHANNEL.lock().unwrap() = Some(rx);
+    }
+
+    /// A sender into the shared control channel, created on first use.
+    ///
+    /// Several producers (the hot reload watcher, app tooling such as a UI
+    /// capture bridge) can each hold a clone and feed the one channel that the
+    /// event loop drains. The sender should call `SignalToUI::set_ui_signal()`
+    /// after sending.
+    pub fn control_channel_sender() -> Sender<StudioToApp> {
+        let mut sender = CONTROL_SENDER.lock().unwrap();
+        if let Some(tx) = sender.as_ref() {
+            return tx.clone();
+        }
+        let (tx, rx) = channel();
+        *CONTROL_CHANNEL.lock().unwrap() = Some(rx);
+        *sender = Some(tx.clone());
+        tx
     }
 
     pub fn local_profile_capture_enabled() -> bool {

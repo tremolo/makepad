@@ -19,7 +19,6 @@ use {
         LiveReloadWatcherHandle, WatchRoot,
     },
     makepad_studio_protocol::StudioToApp,
-    std::sync::mpsc::channel,
 };
 
 #[derive(Clone, Debug)]
@@ -134,7 +133,9 @@ impl Cx {
             return;
         };
 
-        let (tx, rx) = channel::<StudioToApp>();
+        // Share the control channel instead of replacing it, so other
+        // producers installed by the app keep working alongside hot reload.
+        let tx = Cx::control_channel_sender();
         let logger = LiveReloadLogger::new(
             |message| crate::log!("{}", message),
             |message| crate::error!("{}", message),
@@ -155,7 +156,6 @@ impl Cx {
 
         match watcher {
             Ok(watcher) => {
-                Cx::set_control_channel(rx);
                 self.script_data.live_reload.file_observer =
                     Some(DesktopHotReloadWatcher { _watcher: watcher });
             }
