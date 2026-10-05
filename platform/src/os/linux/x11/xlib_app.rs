@@ -1121,7 +1121,10 @@ impl XlibApp {
                                         let utf8 = std::str::from_utf8(&buffer[..count as usize])
                                             .unwrap_or("")
                                             .to_string();
-                                        if !utf8.is_empty() {
+                                        // Enter, Tab, Backspace and Escape arrive as
+                                        // KeyDown already; like Wayland, do not repeat
+                                        // them as control-character text.
+                                        if utf8.chars().any(|ch| !ch.is_control()) {
                                             self.do_callback(XlibEvent::TextInput(
                                                 TextInputEvent {
                                                     input: utf8,
