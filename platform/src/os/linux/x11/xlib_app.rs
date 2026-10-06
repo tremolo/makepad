@@ -1659,6 +1659,20 @@ impl XlibApp {
         }
     }
 
+    /// Ask the clipboard owner for its text; it arrives as a paste
+    /// `TextInput` through `SelectionNotify`, as for Ctrl+V.
+    pub unsafe fn paste_from_clipboard(&mut self, window_id: c_ulong) {
+        x11_sys::XConvertSelection(
+            self.display,
+            self.atoms.clipboard,
+            self.atoms.utf8_string,
+            self.atoms.clipboard,
+            window_id,
+            x11_sys::CurrentTime as c_ulong,
+        );
+        x11_sys::XFlush(self.display);
+    }
+
     pub unsafe fn copy_to_clipboard(&mut self, text: &String, window_id: c_ulong, time: u64) {
         // store the text on the clipboard
         self.clipboard = text.clone();

@@ -377,7 +377,7 @@ pub enum CxOsOp {
     },
     HideClipboardActions,
     CopyToClipboard(String),
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "android", target_os = "linux"))]
     PasteFromClipboard,
     SetPrimarySelection(String),
     ShowSelectionHandles {
@@ -547,7 +547,7 @@ impl std::fmt::Debug for CxOsOp {
             Self::ShowClipboardActions { .. } => write!(f, "ShowClipboardActions"),
             Self::HideClipboardActions => write!(f, "HideClipboardActions"),
             Self::CopyToClipboard(..) => write!(f, "CopyToClipboard"),
-            #[cfg(target_os = "android")]
+            #[cfg(any(target_os = "android", target_os = "linux"))]
             Self::PasteFromClipboard => write!(f, "PasteFromClipboard"),
             Self::SetPrimarySelection(..) => write!(f, "SetPrimarySelection"),
             Self::ShowSelectionHandles { .. } => write!(f, "ShowSelectionHandles"),
@@ -1595,7 +1595,7 @@ impl Cx {
 
     /// Requests a paste from the platform clipboard.
     pub fn paste_from_clipboard(&mut self) {
-        #[cfg(target_os = "android")]
+        #[cfg(any(target_os = "android", target_os = "linux"))]
         self.platform_ops.push_back(CxOsOp::PasteFromClipboard);
     }
 

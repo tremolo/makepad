@@ -1761,7 +1761,7 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for WaylandState {
                             let primary_mod = state.modifiers.control || state.modifiers.logo;
                             if primary_mod {
                                 match key_code {
-                                    KeyCode::KeyV => state.request_clipboard_paste(conn),
+                                    KeyCode::KeyV => state.request_clipboard_paste(Some(conn)),
                                     KeyCode::KeyC => {
                                         let response = Rc::new(RefCell::new(None));
                                         state.do_callback(XlibEvent::TextCopy(
@@ -2569,7 +2569,9 @@ impl WaylandState {
         }
     }
 
-    fn request_clipboard_paste(&mut self, conn: &Connection) {
+    /// Read the clipboard; the text arrives as a paste `TextInput`. Without a
+    /// connection the request goes out with the event loop's next flush.
+    pub(crate) fn request_clipboard_paste(&mut self, conn: Option<&Connection>) {
         if let Some(offer) = self.clipboard_offer.as_ref() {
             if let Some(mime_type) = Self::preferred_clipboard_mime_type(offer) {
                 let mut pipe_fds = [0; 2];
@@ -2581,7 +2583,9 @@ impl WaylandState {
                 let write_fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(pipe_fds[1]) };
                 offer.offer.receive(mime_type.to_string(), write_fd.as_fd());
                 drop(write_fd);
-                let _ = conn.flush();
+                if let Some(conn) = conn {
+                    let _ = conn.flush();
+                }
 
                 unsafe {
                     let flags = libc_sys::fcntl(read_raw_fd, libc_sys::F_GETFL, 0);
