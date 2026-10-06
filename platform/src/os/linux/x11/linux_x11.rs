@@ -690,6 +690,13 @@ impl X11Cx {
                     }
                 }
                 CxOsOp::ShowClipboardActions { .. } => {}
+                CxOsOp::PasteFromClipboard => {
+                    if let Some(window) = opengl_windows.get(0) {
+                        unsafe {
+                            xlib_app.paste_from_clipboard(window.xlib_window.window.unwrap())
+                        }
+                    }
+                }
                 CxOsOp::CopyToClipboard(content) => {
                     if let Some(window) = opengl_windows.get(0) {
                         unsafe {

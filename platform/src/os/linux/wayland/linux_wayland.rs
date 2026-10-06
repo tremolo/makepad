@@ -1050,6 +1050,7 @@ impl WaylandCx {
                     }
                 }
                 CxOsOp::ShowClipboardActions { .. } => {}
+                CxOsOp::PasteFromClipboard => state.request_clipboard_paste(None),
                 CxOsOp::CopyToClipboard(content) => {
                     if let Some(serial) = state.keyboard_serial.or(state.pointer_serial) {
                         if let Some(qhandle) = self.qhandle.as_ref() {
