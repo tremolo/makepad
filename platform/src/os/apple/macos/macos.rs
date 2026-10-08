@@ -2041,6 +2041,9 @@ impl Cx {
                 CxOsOp::CopyToClipboard(content) => {
                     with_macos_app(|app| app.copy_to_clipboard(&content));
                 }
+                CxOsOp::PasteFromClipboard => {
+                    with_macos_app(|app| app.paste_from_clipboard());
+                }
                 CxOsOp::SetPrimarySelection(_) => {}
                 CxOsOp::ShowSelectionHandles { .. } => {}
                 CxOsOp::UpdateSelectionHandles { .. } => {}

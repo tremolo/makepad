@@ -713,8 +713,12 @@ impl MacosApp {
 
                     #[cfg(target_os = "macos")]
                     match key_code {
+                        // Cmd, the macOS clipboard modifier. Ctrl+V, Ctrl+C
+                        // and Ctrl+X stay keys: terminals and editors bind them,
+                        // and so does Cmd+Alt with these letters (apps use it
+                        // for their own shortcuts).
                         KeyCode::KeyV => {
-                            if modifiers.logo || modifiers.control {
+                            if modifiers.logo && !modifiers.alt {
                                 // was a paste
                                 let pasteboard: ObjcId = with_macos_app(|app| app.pasteboard);
                                 let nsstring: ObjcId =
@@ -731,7 +735,7 @@ impl MacosApp {
                             }
                         }
                         KeyCode::KeyC => {
-                            if modifiers.logo || modifiers.control {
+                            if modifiers.logo && !modifiers.alt {
                                 let pasteboard: ObjcId = with_macos_app(|app| app.pasteboard);
                                 let response = Rc::new(RefCell::new(None));
                                 MacosApp::do_callback(MacosEvent::TextCopy(TextClipboardEvent {
@@ -747,7 +751,7 @@ impl MacosApp {
                             }
                         }
                         KeyCode::KeyX => {
-                            if modifiers.logo || modifiers.control {
+                            if modifiers.logo && !modifiers.alt {
                                 let pasteboard: ObjcId = with_macos_app(|app| app.pasteboard);
                                 let response = Rc::new(RefCell::new(None));
                                 MacosApp::do_callback(MacosEvent::TextCut(TextClipboardEvent {
@@ -1669,6 +1673,30 @@ impl MacosApp {
             let array: ObjcId = msg_send![class!(NSArray), arrayWithObject: NSStringPboardType];
             let () = msg_send![pasteboard, declareTypes: array owner: nil];
             let () = msg_send![pasteboard, setString: nsstring forType: NSStringPboardType];
+        }
+    }
+
+    /// Read the pasteboard and deliver it as a paste (`TextInput` with
+    /// `was_paste`), like Cmd+V does. Deferred onto the main queue: the
+    /// platform-op drain that calls this holds the `Cx` borrow.
+    pub fn paste_from_clipboard(&mut self) {
+        unsafe {
+            let main_thread_block = objc_block!(move || {
+                let pasteboard: ObjcId = with_macos_app(|app| app.pasteboard);
+                let nsstring: ObjcId = msg_send![pasteboard, stringForType: NSStringPboardType];
+                if nsstring != std::ptr::null_mut() {
+                    MacosApp::do_callback(MacosEvent::TextInput(TextInputEvent {
+                        input: nsstring_to_string(nsstring),
+                        was_paste: true,
+                        replace_last: false,
+                        ..Default::default()
+                    }));
+                }
+            });
+            let main_queue: ObjcId = msg_send![class!(NSOperationQueue), mainQueue];
+            let block_operation: ObjcId =
+                msg_send![class!(NSBlockOperation), blockOperationWithBlock: &main_thread_block];
+            let () = msg_send![main_queue, addOperation: block_operation];
         }
     }
 
