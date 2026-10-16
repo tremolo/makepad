@@ -481,6 +481,14 @@ pub struct Splitter {
     /// unfolding restores the bar the user left, with nobody remembering it.
     #[live(SplitterCollapse::None)]
     pub collapse: SplitterCollapse,
+    /// Lay pane B out first: on the left (or on top) with A after the bar.
+    /// Only the picture is mirrored: `align`, `collapse`, the floors and
+    /// `position()` still speak of A and B, so a host that moves a panel to
+    /// the other edge keeps its sizes. A drag and the arrow keys follow the
+    /// bar on screen.
+    #[live(false)]
+    #[apply_state]
+    pub b_first: bool,
 
     /// Hold the align to the floors as a law, not as the rule of thumb the
     /// dock was built on.
@@ -664,6 +672,9 @@ impl Widget for Splitter {
                         SplitterAxis::Horizontal => f.abs.x - f.abs_start.x,
                         SplitterAxis::Vertical => f.abs.y - f.abs_start.y,
                     };
+                    // B first: the bar moving right (down) grows B, so A
+                    // and the position shrink.
+                    let delta = if self.b_first { -delta } else { delta };
                     // A press alone must not bring a folded pane back: the
                     // bar is also the thing you click on your way to
                     // something else.
@@ -698,6 +709,9 @@ impl Widget for Splitter {
                 // Left and up take room from the first pane whichever way
                 // the split runs, so the key that means "less" is the one
                 // pointing at the pane that loses.
+                // B first, the pane on that side is B: "less" is a larger
+                // position.
+                let step = if self.b_first { -step } else { step };
                 let want = match ke.key_code {
                     KeyCode::ArrowLeft | KeyCode::ArrowUp => Some(self.clamp(self.position - step)),
                     KeyCode::ArrowRight | KeyCode::ArrowDown => Some(self.clamp(self.position + step)),
@@ -744,7 +758,11 @@ impl Widget for Splitter {
             self.begin(cx, walk);
         }
         if let Some(DrawState::DrawA) = self.draw_state.get() {
-            self.a.draw(cx, scope)?;
+            if self.b_first {
+                self.b.draw(cx, scope)?;
+            } else {
+                self.a.draw(cx, scope)?;
+            }
             self.draw_state.set(DrawState::DrawSplit);
         }
         if let Some(DrawState::DrawSplit) = self.draw_state.get() {
@@ -752,7 +770,11 @@ impl Widget for Splitter {
             self.draw_state.set(DrawState::DrawB)
         }
         if let Some(DrawState::DrawB) = self.draw_state.get() {
-            self.b.draw(cx, scope)?;
+            if self.b_first {
+                self.a.draw(cx, scope)?;
+            } else {
+                self.b.draw(cx, scope)?;
+            }
             self.end(cx);
             self.draw_state.end();
         }
@@ -779,15 +801,26 @@ impl Splitter {
         // returns the bar to what was asked for.
         self.position = self.resolve();
 
+        // The first pane on screen: A at its position, or B with what A
+        // and the bar leave.
+        let first = if self.b_first {
+            (self.room() - self.position - self.size.max(0.0)).max(0.0)
+        } else {
+            self.position
+        };
         let walk = match self.axis {
-            SplitterAxis::Horizontal => Walk::new(Size::Fixed(self.position), Size::fill()),
-            SplitterAxis::Vertical => Walk::new(Size::fill(), Size::Fixed(self.position)),
+            SplitterAxis::Horizontal => Walk::new(Size::Fixed(first), Size::fill()),
+            SplitterAxis::Vertical => Walk::new(Size::fill(), Size::Fixed(first)),
         };
         cx.begin_turtle(walk, Layout::flow_down());
     }
 
     pub fn middle(&mut self, cx: &mut Cx2d) {
-        cx.end_turtle_with_area(&mut self.area_a);
+        if self.b_first {
+            cx.end_turtle_with_area(&mut self.area_b);
+        } else {
+            cx.end_turtle_with_area(&mut self.area_a);
+        }
         match self.axis {
             SplitterAxis::Horizontal => {
                 self.draw_bg.is_vertical = 1.0;
@@ -808,7 +841,11 @@ impl Splitter {
     }
 
     pub fn end(&mut self, cx: &mut Cx2d) {
-        cx.end_turtle_with_area(&mut self.area_b);
+        if self.b_first {
+            cx.end_turtle_with_area(&mut self.area_a);
+        } else {
+            cx.end_turtle_with_area(&mut self.area_b);
+        }
         cx.end_turtle();
     }
 
@@ -940,6 +977,15 @@ impl Splitter {
 
     pub fn set_axis(&mut self, axis: SplitterAxis) {
         self.axis = axis;
+    }
+
+    /// Lay pane B out first (left or top); see `b_first`.
+    pub fn set_b_first(&mut self, b_first: bool) {
+        self.b_first = b_first;
+    }
+
+    pub fn b_first(&self) -> bool {
+        self.b_first
     }
 
     pub fn align(&self) -> SplitterAlign {
