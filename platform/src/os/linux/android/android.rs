@@ -1729,6 +1729,10 @@ impl Cx {
         if SignalToUI::check_and_clear_action_signal() {
             self.handle_action_receiver();
         }
+        // In-process control messages (an app's own screenshot requests),
+        // as every desktop backend polls them; Android never did, so they
+        // were never answered.
+        self.poll_control_channel();
 
         self.dispatch_network_runtime_events();
         self.flush_studio_run_view_frame_results();
@@ -2460,6 +2464,56 @@ impl Cx {
         //}
     }
 
+    /// Answer pending studio screenshot requests (and feed a screen
+    /// capture) from the frame just drawn, popups included, before it is
+    /// presented. The OpenGL path only; the Vulkan backend reads back its
+    /// own frames.
+    fn read_back_gl_screenshots(&mut self, window_id: crate::WindowId) {
+        #[cfg(use_vulkan)]
+        if self.os.vulkan.is_some() {
+            return;
+        }
+        if !self.os.has_drawable_surface() {
+            return;
+        }
+        let request_ids =
+            self.take_studio_screenshot_request_ids_for_window(0, Some(window_id.id()));
+        let wants_capture = crate::screen_capture::capture_wants_window(Some(window_id.id()));
+        if request_ids.is_empty() && !wants_capture {
+            return;
+        }
+        let w = self.os.display_size.x.max(0.0) as u32;
+        let h = self.os.display_size.y.max(0.0) as u32;
+        if w == 0 || h == 0 {
+            return;
+        }
+        let mut pixels = vec![0u8; (w * h * 4) as usize];
+        unsafe {
+            let gl = self.os.gl();
+            (gl.glReadPixels)(
+                0,
+                0,
+                w as i32,
+                h as i32,
+                gl_sys::RGBA,
+                gl_sys::UNSIGNED_BYTE,
+                pixels.as_mut_ptr() as *mut _,
+            );
+        }
+        // OpenGL reads bottom-up; flip rows for a top-down PNG.
+        let stride = (w * 4) as usize;
+        for y in 0..(h as usize / 2) {
+            let (top, bottom) = pixels.split_at_mut((h as usize - 1 - y) * stride);
+            top[y * stride..(y + 1) * stride].swap_with_slice(&mut bottom[..stride]);
+        }
+        crate::screen_capture::deliver_capture_frame(Some(window_id.id()), w, h, &pixels);
+        if !request_ids.is_empty() {
+            if let Ok(png) = Self::encode_rgba_as_png(w, h, &pixels) {
+                Self::send_studio_screenshot_response(request_ids, w, h, png);
+            }
+        }
+    }
+
     pub(crate) fn handle_repaint(&mut self) {
         //opengl_cx.make_current();
         let mut passes_todo = Vec::new();
@@ -2517,6 +2571,7 @@ impl Cx {
                         vertex_buffer_bytes: metrics.vertex_buffer_bytes,
                         texture_bytes: metrics.texture_bytes,
                     }));
+                    self.read_back_gl_screenshots(window_id);
                     self.present_window_for_active_backend();
                 }
                 CxDrawPassParent::DrawPass(_) => {
