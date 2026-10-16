@@ -306,6 +306,8 @@ extern "C" {
         mode: c_int,
     ) -> c_int;
 
+    pub fn snd_pcm_close(pcm: *mut snd_pcm_t) -> c_int;
+
     pub fn snd_pcm_hw_params_malloc(ptr: *mut *mut snd_pcm_hw_params_t) -> c_int;
 
     pub fn snd_pcm_hw_params_any(pcm: *mut snd_pcm_t, params: *mut snd_pcm_hw_params_t) -> c_int;

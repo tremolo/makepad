@@ -487,6 +487,27 @@ impl AlsaAudioAccess {
     }
 }
 
+/// An open PCM handle that is closed when dropped, unless taken.
+struct OpenPcm(*mut snd_pcm_t);
+
+impl Drop for OpenPcm {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe { snd_pcm_close(self.0) };
+        }
+    }
+}
+
+// Every device thread ends by dropping its device. Without the close, each
+// open leaked its handle, and with it the backend's resources: through
+// ALSA's PulseAudio plugin a server connection and a mainloop thread per
+// recording.
+impl Drop for AlsaAudioDevice {
+    fn drop(&mut self) {
+        unsafe { snd_pcm_close(self.device_handle) };
+    }
+}
+
 impl AlsaAudioDevice {
     fn new(
         device_name: &str,
@@ -499,6 +520,8 @@ impl AlsaAudioDevice {
             let name0 = format!("{}\0", device_name);
             let mut rate = 48000;
             alsa_error!(snd_pcm_open(&mut handle, name0.as_ptr(), direction, 0))?;
+            // Closes the handle when setting it up fails below.
+            let mut opened = OpenPcm(handle);
             alsa_error!(snd_pcm_hw_params_malloc(&mut hw_params))?;
             alsa_error!(snd_pcm_hw_params_any(handle, hw_params))?;
             alsa_error!(snd_pcm_hw_params_set_access(
@@ -565,7 +588,8 @@ impl AlsaAudioDevice {
             }
             snd_pcm_hw_params_free(hw_params);
 
-            // alright device is prepared.
+            // alright device is prepared; from here Drop closes the handle.
+            opened.0 = std::ptr::null_mut();
             Ok((
                 Self {
                     interleaved: {
