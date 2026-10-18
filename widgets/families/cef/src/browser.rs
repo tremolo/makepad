@@ -61,6 +61,19 @@ pub const SETTLE: std::time::Duration = std::time::Duration::from_millis(250);
 /// paint callback outright (measured: zero accelerated frames at ~2 kHz).
 pub const RESIZE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(8);
 
+/// What the browser view tells the app.
+#[derive(Clone, Debug, Default)]
+pub enum BrowserAction {
+    #[default]
+    None,
+    /// A right-click on the page (CEF): what it was on, and where in the
+    /// window, for the app's own menu.
+    ContextMenu {
+        abs: DVec2,
+        menu: makepad_cef::ContextMenu,
+    },
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[allow(dead_code)]
 enum ActiveBrowserBackend {
@@ -1015,7 +1028,9 @@ impl Browser {
         makepad_cef::do_message_loop_work();
         let mut latest_frame = None;
         let mut accelerated_dirty = false;
+        let mut context_menu = None;
         if let Some(browser) = &mut self.cef_browser {
+            context_menu = browser.take_context_menu();
             if !browser.is_loading() {
                 let key = (self.zoom_level.to_bits(), browser.nav_generation());
                 if self.zoom_applied != Some(key) && browser.set_zoom_level(self.zoom_level).is_ok() {
@@ -1044,6 +1059,12 @@ impl Browser {
                     self.texture_valid = Some(valid);
                     self.painted = true;
                 }
+            }
+        }
+        if let Some(menu) = context_menu {
+            if let Some(rect) = self.browser_rect(cx) {
+                let abs = rect.pos + dvec2(menu.x as f64, menu.y as f64);
+                cx.widget_action(self.uid, BrowserAction::ContextMenu { abs, menu });
             }
         }
         if let Some(frame) = latest_frame {
@@ -1496,6 +1517,16 @@ impl BrowserRef {
     pub fn set_visible(&self, cx: &mut Cx, visible: bool) {
         if let Some(mut inner) = self.borrow_mut() {
             inner.set_visible_internal(cx, visible);
+        }
+    }
+
+    /// A right-click on the page in `actions`: where in the window, and what
+    /// it was on.
+    pub fn context_menu(&self, actions: &Actions) -> Option<(DVec2, makepad_cef::ContextMenu)> {
+        let uid = self.borrow()?.uid;
+        match actions.find_widget_action(uid)?.cast() {
+            BrowserAction::ContextMenu { abs, menu } => Some((abs, menu)),
+            BrowserAction::None => None,
         }
     }
 

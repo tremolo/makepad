@@ -144,6 +144,42 @@ pub struct AudioCaptureStats {
     pub pool_misses: u64,
 }
 
+/// What a right-click (or a long press) on the page was on, for the
+/// embedder's own menu: CEF shows none. Coordinates are in view points
+/// from the page's top-left corner.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ContextMenu {
+    pub x: i32,
+    pub y: i32,
+    pub page_url: String,
+    /// The link under the pointer, empty when there is none.
+    pub link_url: String,
+    /// The image under the pointer, empty when there is none.
+    pub image_url: String,
+    /// The selected text, empty when nothing is selected.
+    pub selection_text: String,
+    /// A text field: offer the edit commands.
+    pub editable: bool,
+    pub can_undo: bool,
+    pub can_redo: bool,
+    pub can_cut: bool,
+    pub can_copy: bool,
+    pub can_paste: bool,
+    pub can_select_all: bool,
+}
+
+/// An edit command for the page ([`Browser::edit`]), as its menu or its
+/// shortcuts would run it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EditCommand {
+    Undo,
+    Redo,
+    Cut,
+    Copy,
+    Paste,
+    SelectAll,
+}
+
 /// One line a page wrote to its console: `console.log` and its siblings,
 /// and what Chromium reports there (a script error, a blocked request).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -470,6 +506,14 @@ impl Browser {
 
     pub fn take_console_messages(&mut self) -> Vec<ConsoleMessage> {
         Vec::new()
+    }
+
+    pub fn take_context_menu(&mut self) -> Option<ContextMenu> {
+        None
+    }
+
+    pub fn edit(&mut self, _command: EditCommand) -> Result<()> {
+        Ok(())
     }
 
     pub fn evaluate_javascript(&mut self, _expression: &str) -> Result<u64> {
