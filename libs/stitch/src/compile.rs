@@ -202,10 +202,13 @@ impl<'a> Compile<'a> {
 
     /// Preserve the local with the given index by preserving every local operand that refers to it.
     fn preserve_local(&mut self, local_idx: usize) {
+        // `preserve_local_opd` unlinks the operand, which moves the list's
+        // head on: overwriting the head here with the unlinked operand's
+        // (cleared) `next_opd_idx` dropped the rest of the list, and a later
+        // operand still marked local then found none (a panic compiling a
+        // function that reads a local into several operands, then sets it).
         while let Some(opd_idx) = self.locals[local_idx].first_opd_idx {
             self.preserve_local_opd(opd_idx);
-            self.locals[local_idx].first_opd_idx = self.opds[opd_idx].next_opd_idx;
-            self.opds[opd_idx].local_idx = None;
         }
     }
 
@@ -358,8 +361,10 @@ impl<'a> Compile<'a> {
             self.dealloc_reg(self.opd(0).type_.reg_idx());
         }
         let opd_idx = self.opds.len() - 1;
-        if let Some(local_idx) = self.opds[opd_idx].local_idx {
-            self.locals[local_idx].first_opd_idx = self.opds[opd_idx].next_opd_idx;
+        // Unlink it fully: the next operand's `prev_opd_idx` would point at
+        // this slot otherwise, which the next push reuses.
+        if self.opds[opd_idx].local_idx.is_some() {
+            self.remove_local_opd(opd_idx);
         }
         self.opds.pop().unwrap().type_
     }
