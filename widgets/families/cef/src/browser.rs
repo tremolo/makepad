@@ -192,21 +192,7 @@ impl Browser {
                     self.system_browser_spawned = false;
                 }
             }
-            ActiveBrowserBackend::CEF => {
-                self.texture = None;
-                self.texture_alloc = None;
-                self.texture_valid = None;
-                self.pending_texture = None;
-                self.pending_alloc = None;
-                self.painted = false;
-                {
-                    self.cef_browser = None;
-                    self.accel_target_size = None;
-                    self.resized_to = None;
-                    self.resized_at = None;
-                    self.deferred_resize = None;
-                }
-            }
+            ActiveBrowserBackend::CEF => self.drop_cef_page(),
             ActiveBrowserBackend::None | ActiveBrowserBackend::Unsupported => {}
         }
 
@@ -214,6 +200,25 @@ impl Browser {
         if desired_backend != ActiveBrowserBackend::Unsupported {
             self.init_error = None;
         }
+    }
+
+    /// Close the CEF page and forget its frames; the next visible draw opens
+    /// a new one.
+    fn drop_cef_page(&mut self) {
+        self.texture = None;
+        self.texture_alloc = None;
+        self.texture_valid = None;
+        self.pending_texture = None;
+        self.pending_alloc = None;
+        self.painted = false;
+        self.cef_browser = None;
+        self.accel_target_size = None;
+        self.resized_to = None;
+        self.resized_at = None;
+        self.deferred_resize = None;
+        self.wanted_size = None;
+        self.wanted_at = None;
+        self.last_url.clear();
     }
 
     fn sync_system_browser(&mut self, cx: &mut Cx) {
@@ -862,6 +867,9 @@ impl Browser {
                 Ok(browser) => {
                     self.last_url = self.url.as_ref().to_string();
                     self.cef_browser = Some(browser);
+                    if self.pump_timer.is_empty() {
+                        self.pump_timer = _cx.start_interval(Self::PUMP_INTERVAL);
+                    }
                 }
                 Err(err) => {
                     let message = err.to_string();
@@ -1116,10 +1124,6 @@ impl Browser {
 
 impl Widget for Browser {
     fn handle_event(&mut self, cx: &mut Cx, event: &Event, _scope: &mut Scope) {
-        if let Event::Startup = event {
-            self.pump_timer = cx.start_interval(Self::PUMP_INTERVAL);
-        }
-
         let desired_backend = self.resolved_backend();
         self.sync_backend_transition(cx, desired_backend);
 
@@ -1154,6 +1158,12 @@ impl Widget for Browser {
         if self.pump_timer.is_event(event).is_some() {
             if desired_backend == ActiveBrowserBackend::CEF {
                 self.pump_browser(cx);
+            }
+            // The loop turns while there is a page (from its first draw):
+            // an app with a Browser it never shows wakes for nothing.
+            if self.cef_browser.is_none() {
+                cx.stop_timer(self.pump_timer);
+                self.pump_timer = Timer::empty();
             }
         }
 
@@ -1483,6 +1493,18 @@ impl BrowserRef {
     pub fn set_visible(&self, cx: &mut Cx, visible: bool) {
         if let Some(mut inner) = self.borrow_mut() {
             inner.set_visible_internal(cx, visible);
+        }
+    }
+
+    /// Close the page (CEF: the browser and its renderer go away, and the
+    /// message loop stops turning once they have). The widget stays; a
+    /// visible draw opens the page at its URL again.
+    pub fn close_page(&self, cx: &mut Cx) {
+        if let Some(mut inner) = self.borrow_mut() {
+            if inner.active_backend == ActiveBrowserBackend::CEF {
+                inner.drop_cef_page();
+            }
+            inner.redraw(cx);
         }
     }
 
