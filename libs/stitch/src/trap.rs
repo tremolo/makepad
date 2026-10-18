@@ -11,6 +11,8 @@ pub enum Trap {
     TableAccessOutOfBounds,
     MemAccessOutOfBounds,
     StackOverflow,
+    /// The embedder asked a running guest to stop ([`crate::Store::set_interrupt`]).
+    Interrupted,
 }
 
 impl Trap {
@@ -25,6 +27,7 @@ impl Trap {
             6 => Some(Self::TableAccessOutOfBounds),
             7 => Some(Self::MemAccessOutOfBounds),
             8 => Some(Self::StackOverflow),
+            9 => Some(Self::Interrupted),
             _ => None,
         }
     }
@@ -46,6 +49,7 @@ impl fmt::Display for Trap {
             Self::TableAccessOutOfBounds => write!(f, "table access out of bounds"),
             Self::MemAccessOutOfBounds => write!(f, "memory access out of bounds"),
             Self::StackOverflow => write!(f, "stack overflow"),
+            Self::Interrupted => write!(f, "interrupted"),
         }
     }
 }

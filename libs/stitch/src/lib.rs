@@ -52,5 +52,6 @@ pub use self::{
     simd::V128,
     store::Store,
     table::{Table, TableError, TableType},
+    trap::Trap,
     val::{Val, ValType},
 };

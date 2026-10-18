@@ -31,6 +31,7 @@ pub struct Store {
     elems: Vec<AliasableBox<ElemEntity>>,
     datas: Vec<AliasableBox<DataEntity>>,
     externs: Vec<AliasableBox<ExternEntity>>,
+    interrupt: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl Store {
@@ -47,7 +48,22 @@ impl Store {
             elems: Vec::new(),
             datas: Vec::new(),
             externs: Vec::new(),
+            interrupt: None,
         }
+    }
+
+    /// Stop running guests from another thread: while `flag` is set, a
+    /// guest running in this store traps with [`crate::Trap::Interrupted`]
+    /// at its next loop iteration or function call (a guest that never
+    /// returns otherwise). The embedder clears the flag to run again.
+    pub fn set_interrupt(&mut self, flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>) {
+        self.interrupt = flag;
+    }
+
+    pub(crate) fn interrupt_ptr(&self) -> *const std::sync::atomic::AtomicBool {
+        self.interrupt
+            .as_ref()
+            .map_or(std::ptr::null(), std::sync::Arc::as_ptr)
     }
 
     pub fn engine(&self) -> &Engine {
