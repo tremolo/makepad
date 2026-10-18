@@ -113,6 +113,9 @@ pub(crate) struct Context<'a> {
     pub(crate) stack: Option<StackGuard>,
     // Used to store out-of-band error data.
     pub(crate) error: Option<Error>,
+    // The store's interrupt flag, or null: checked on backward branches
+    // and function entries.
+    pub(crate) interrupt: *const std::sync::atomic::AtomicBool,
 }
 
 /// Used to tell the interpreter what to do next.
@@ -202,6 +205,7 @@ pub(crate) fn exec(
                 stop as *const () as InstrSlot,
             ];
 
+            let interrupt = store.interrupt_ptr();
             // Create an execution context.
             let mut context = Context {
                 ip: trampoline.as_mut_ptr(),
@@ -214,6 +218,7 @@ pub(crate) fn exec(
                 store,
                 stack: Some(stack),
                 error: None,
+                interrupt,
             };
 
             // Main interpreter loop
@@ -374,7 +379,12 @@ threaded_instr!(br(
     cx: Cx,
 ) -> ControlFlowBits {
     // Read operands
-    let target = *ip.cast();
+    let target: Ip = *ip.cast();
+
+    // A backward branch closes a loop: the place to stop a guest.
+    if target <= ip && interrupted(cx) {
+        return ControlFlow::Trap(Trap::Interrupted).to_bits();
+    }
 
     // Branch to target
     let ip = target;
@@ -397,7 +407,10 @@ threaded_instr!(br_if_z_s(
     let (cond, ip): (u32, _) = read_stack(ip, sp);
     let (target, ip) = read_imm(ip);
 
-    // Branch to target if zero
+    // Branch to target if zero; a backward one closes a loop.
+    if cond == 0 && target <= ip && interrupted(cx) {
+        return ControlFlow::Trap(Trap::Interrupted).to_bits();
+    }
     let ip = if cond == 0 { target } else { ip };
 
     // Execute next instruction
@@ -418,7 +431,10 @@ threaded_instr!(br_if_z_r(
     let cond: u32 = read_reg(ix, sx, dx);
     let (target, ip) = read_imm(ip);
 
-    // Branch to target if zero
+    // Branch to target if zero; a backward one closes a loop.
+    if cond == 0 && target <= ip && interrupted(cx) {
+        return ControlFlow::Trap(Trap::Interrupted).to_bits();
+    }
     let ip = if cond == 0 { target } else { ip };
 
     // Execute next instruction
@@ -439,7 +455,10 @@ threaded_instr!(br_if_nz_s(
     let (cond, ip): (u32, _) = read_stack(ip, sp);
     let (target, ip) = read_imm(ip);
 
-    // Branch to target if not zero
+    // Branch to target if not zero; a backward one closes a loop.
+    if cond != 0 && target <= ip && interrupted(cx) {
+        return ControlFlow::Trap(Trap::Interrupted).to_bits();
+    }
     let ip = if cond != 0 { target } else { ip };
 
     // Execute next instruction
@@ -460,7 +479,10 @@ threaded_instr!(br_if_nz_r(
     let cond: u32 = read_reg(ix, sx, dx);
     let (target, ip) = read_imm(ip);
 
-    // Branch to target if not zero
+    // Branch to target if not zero; a backward one closes a loop.
+    if cond != 0 && target <= ip && interrupted(cx) {
+        return ControlFlow::Trap(Trap::Interrupted).to_bits();
+    }
     let ip = if cond != 0 { target } else { ip };
 
     // Execute next instruction
@@ -482,8 +504,12 @@ threaded_instr!(br_table_s(
     let (target_count, ip): (u32, _) = read_imm(ip);
     let targets: *mut Ip = ip.cast();
 
-    // Branch to target
-    let ip = *targets.add(target_idx.min(target_count) as usize);
+    // Branch to target; a backward one closes a loop.
+    let target = *targets.add(target_idx.min(target_count) as usize);
+    if target <= ip && interrupted(cx) {
+        return ControlFlow::Trap(Trap::Interrupted).to_bits();
+    }
+    let ip = target;
 
     // Execute next instruction
     next_instr(ip, sp, md, ms, ix, sx, dx, cx)
@@ -504,8 +530,12 @@ threaded_instr!(br_table_r(
     let (target_count, ip): (u32, _) = read_imm(ip);
     let targets: *mut Ip = ip.cast();
 
-    // Branch to target
-    let ip = *targets.add(target_idx.min(target_count) as usize);
+    // Branch to target; a backward one closes a loop.
+    let target = *targets.add(target_idx.min(target_count) as usize);
+    if target <= ip && interrupted(cx) {
+        return ControlFlow::Trap(Trap::Interrupted).to_bits();
+    }
+    let ip = target;
 
     // Execute next instruction
     next_instr(ip, sp, md, ms, ix, sx, dx, cx)
@@ -3974,6 +4004,10 @@ threaded_instr!(enter(
     if code.max_stack_height > Stack::SIZE - stack_height {
         return ControlFlow::Trap(Trap::StackOverflow).to_bits();
     }
+    // A guest that recurses without loops stops here.
+    if interrupted(cx) {
+        return ControlFlow::Trap(Trap::Interrupted).to_bits();
+    }
 
     // Initialize the locals for this function to their default values.
     ptr::write_bytes(sp, 0, code.local_count);
@@ -3994,6 +4028,13 @@ threaded_instr!(enter(
 });
 
 // Helper functions
+
+/// Whether the embedder asked the guest to stop (`Store::set_interrupt`).
+#[inline(always)]
+unsafe fn interrupted(cx: Cx) -> bool {
+    let flag = (*cx).interrupt;
+    !flag.is_null() && (*flag).load(std::sync::atomic::Ordering::Relaxed)
+}
 
 /// Executes the next instruction.
 pub(crate) unsafe fn next_instr(
