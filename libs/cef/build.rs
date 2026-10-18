@@ -68,6 +68,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=MAKEPAD_CEF_OFFLINE");
     println!("cargo:rerun-if-env-changed=MAKEPAD_CEF_DRY_RUN");
     println!("cargo:rerun-if-env-changed=MAKEPAD_CEF_PLATFORM");
+    println!("cargo:rerun-if-env-changed=MAKEPAD_CEF_RUNTIME_DIST");
     println!("cargo:rerun-if-changed=build_support/cef_dist.rs");
     println!("cargo:rerun-if-changed=helper_main_macos.c");
 
@@ -115,6 +116,17 @@ fn main() {
         Some(p) => p,
         None => return,
     };
+
+    // MAKEPAD_CEF_RUNTIME_DIST: the app finds or installs a distribution
+    // when it runs (`set_dist_dir`, feature `install`); the build fetches
+    // nothing and bakes in no path. Not on macOS, whose helper app is
+    // compiled here against the distribution's headers.
+    let runtime_dist = env::var("MAKEPAD_CEF_RUNTIME_DIST").map(|v| v != "0").unwrap_or(false);
+    if runtime_dist && env::var("CARGO_CFG_TARGET_OS").ok().as_deref() != Some("macos")
+        && env::var_os("MAKEPAD_CEF_DIST_DIR").is_none()
+    {
+        return;
+    }
 
     // MAKEPAD_CEF_DIST_DIR names a distribution directly and is used as
     // it is; otherwise the prebuilt dir's pointer for this platform, else a

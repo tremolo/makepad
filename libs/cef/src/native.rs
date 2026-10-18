@@ -864,17 +864,41 @@ fn helper_binary_source() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(env!("MAKEPAD_CEF_HELPER_BIN")))
 }
 
+/// The distribution the app named at runtime ([`set_dist_dir`]).
 #[cfg(any(windows, target_os = "linux"))]
-fn runtime_paths() -> RuntimePaths {
+static RUNTIME_DIST_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+/// Name the CEF distribution to load (a `cef_binary_*` directory with
+/// `Release/` and `Resources/`), for an app that finds or installs it at
+/// runtime instead of building against one. Call it before [`bootstrap`];
+/// the first call wins. `MAKEPAD_CEF_DIST_DIR` in the environment still
+/// overrides it.
+#[cfg(any(windows, target_os = "linux"))]
+pub fn set_dist_dir(dir: PathBuf) {
+    let _ = RUNTIME_DIST_DIR.set(dir);
+}
+
+/// The distribution to load: `MAKEPAD_CEF_DIST_DIR` from the environment,
+/// else the one the app named, else the one the build fetched (none when
+/// built with `MAKEPAD_CEF_RUNTIME_DIST`).
+#[cfg(any(windows, target_os = "linux"))]
+fn runtime_paths() -> Result<RuntimePaths> {
     let dist_dir = env::var_os("MAKEPAD_CEF_DIST_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env!("MAKEPAD_CEF_DIST_DIR")));
+        .or_else(|| RUNTIME_DIST_DIR.get().cloned())
+        .or_else(|| option_env!("MAKEPAD_CEF_DIST_DIR").map(PathBuf::from))
+        .ok_or_else(|| {
+            Error::new(
+                "no CEF distribution: this build expects the app to name one (set_dist_dir) \
+                 or MAKEPAD_CEF_DIST_DIR",
+            )
+        })?;
     let module_dir = dist_dir.join("Release");
-    RuntimePaths {
+    Ok(RuntimePaths {
         libcef: module_dir.join(if cfg!(windows) { "libcef.dll" } else { "libcef.so" }),
         resources_dir: dist_dir.join("Resources"),
         module_dir,
-    }
+    })
 }
 
 /// The Windows distribution keeps `Resources/` (icudtl.dat, the pak files,
@@ -922,9 +946,35 @@ fn link_tree(source: &Path, target: &Path) -> Result<()> {
     Ok(())
 }
 
+static RUNTIME: OnceLock<Runtime> = OnceLock::new();
+static RUNTIME_LOAD: Mutex<()> = Mutex::new(());
+
+/// The CEF runtime, loaded on first use. A load that fails is not kept: the
+/// distribution may be installed later in the same process.
 fn runtime() -> Result<&'static Runtime> {
-    static RUNTIME: OnceLock<Result<Runtime>> = OnceLock::new();
-    let runtime_result = RUNTIME.get_or_init(|| {
+    if let Some(runtime) = RUNTIME.get() {
+        return Ok(runtime);
+    }
+    let _loading = RUNTIME_LOAD.lock().unwrap_or_else(|err| err.into_inner());
+    if let Some(runtime) = RUNTIME.get() {
+        return Ok(runtime);
+    }
+    let runtime = load_runtime()?;
+    Ok(RUNTIME.get_or_init(|| runtime))
+}
+
+/// The CEF runtime if something loaded it already. Housekeeping (the message
+/// loop, shutdown, the profile flush) goes through this and never loads
+/// libcef for an app that has not shown a page.
+fn loaded_runtime() -> Option<&'static Runtime> {
+    RUNTIME.get()
+}
+
+fn load_runtime() -> Result<Runtime> {
+    {
+        #[cfg(any(windows, target_os = "linux"))]
+        let paths = runtime_paths()?;
+        #[cfg(target_os = "macos")]
         let paths = runtime_paths();
         #[cfg(any(windows, target_os = "linux"))]
         ensure_flat_layout(&paths)?;
@@ -996,10 +1046,7 @@ fn runtime() -> Result<&'static Runtime> {
             _paths: paths,
             state: Mutex::new(RuntimeState::default()),
         })
-    });
-    runtime_result
-        .as_ref()
-        .map_err(|err| Error::new(err.to_string()))
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -1373,6 +1420,10 @@ fn chromium_switches() -> Vec<String> {
     }
     #[cfg(target_os = "linux")]
     switches.push("--ozone-platform=headless".to_string());
+    // Chromium's first-run handling makes `cef_initialize` fail with exit
+    // code 28 on a fresh profile (tauri-apps/tauri#15979); an embedded
+    // page renderer has no first run to show.
+    switches.push("--no-first-run".to_string());
     for switch in [
         "--disable-background-networking",
         "--disable-sync",
@@ -1615,7 +1666,7 @@ fn ensure_initialized() -> Result<()> {
     );
     // The resources sit beside libcef.dll (`ensure_flat_layout`); say so.
     #[cfg(any(windows, target_os = "linux"))]
-    let paths = runtime_paths();
+    let paths = runtime_paths()?;
     #[cfg(any(windows, target_os = "linux"))]
     let resources_dir = CefString::new(&runtime.api, paths.module_dir.to_string_lossy())?;
     #[cfg(any(windows, target_os = "linux"))]
@@ -1661,6 +1712,8 @@ fn ensure_initialized() -> Result<()> {
 
     let app = AppHandler::allocate();
 
+    #[cfg(target_os = "linux")]
+    let app_signals = AppSignalHandlers::save();
     let initialized = unsafe {
         (runtime.api.cef_initialize)(
             &args.main_args,
@@ -1669,6 +1722,8 @@ fn ensure_initialized() -> Result<()> {
             ptr::null_mut(),
         )
     };
+    #[cfg(target_os = "linux")]
+    app_signals.restore();
     if initialized == 0 {
         let exit_code = unsafe { (runtime.api.cef_get_exit_code)() };
         unsafe {
@@ -1707,6 +1762,17 @@ fn temp_root_cache_path() -> Result<PathBuf> {
 /// profile. Chromium locks a profile per process — if the stable dir is
 /// locked by a live sibling (SingletonLock points at a running pid on this
 /// host), fall back to ephemeral instead of failing CEF init.
+/// The profile directory the app named ([`set_profile_dir`]).
+static PROFILE_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+/// Keep the browser profile (cookies, local storage, the cache) in `dir`
+/// instead of `~/.makepad-cef/<executable>`. Call it before the first
+/// browser; the first call wins. `MAKEPAD_CEF_PROFILE_DIR` and
+/// `MAKEPAD_CEF_EPHEMERAL` in the environment still override it.
+pub fn set_profile_dir(dir: PathBuf) {
+    let _ = PROFILE_DIR.set(dir);
+}
+
 fn profile_root_cache_path() -> Result<PathBuf> {
     if env::var("MAKEPAD_CEF_EPHEMERAL").is_ok() {
         return temp_root_cache_path();
@@ -1717,17 +1783,23 @@ fn profile_root_cache_path() -> Result<PathBuf> {
             .map_err(|err| Error::new(format!("failed to create {}: {err}", path.display())))?;
         return Ok(path);
     }
-    let Some(home) = home_dir() else {
-        return temp_root_cache_path();
+    let path = match PROFILE_DIR.get() {
+        Some(dir) => dir.clone(),
+        None => {
+            let Some(home) = home_dir() else {
+                return temp_root_cache_path();
+            };
+            let exe = env::current_exe().map_err(|err| {
+                Error::new(format!("failed to resolve current executable: {err}"))
+            })?;
+            let stem = exe
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or("makepad-cef")
+                .to_string();
+            home.join(".makepad-cef").join(&stem)
+        }
     };
-    let exe = env::current_exe()
-        .map_err(|err| Error::new(format!("failed to resolve current executable: {err}")))?;
-    let stem = exe
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .unwrap_or("makepad-cef")
-        .to_string();
-    let path = home.join(".makepad-cef").join(&stem);
     std::fs::create_dir_all(&path)
         .map_err(|err| Error::new(format!("failed to create {}: {err}", path.display())))?;
     // Live-lock check: Chromium's SingletonLock is a symlink "host-pid"
@@ -1761,6 +1833,46 @@ fn profile_root_cache_path() -> Result<PathBuf> {
         }
     }
     Ok(path)
+}
+
+/// The app's handlers for the termination signals. Chromium installs its
+/// own in `cef_initialize`, which only ask CEF's loop to shut the browser
+/// down: an app that pumps the loop itself (and stops when it has no page)
+/// would never hear a SIGTERM again. CEF's advice is to put the app's back.
+#[cfg(target_os = "linux")]
+struct AppSignalHandlers([(i32, SavedSigaction); 3]);
+
+/// A `struct sigaction`, kept whole and handed back unread (it is at most
+/// 152 bytes on the Linux targets).
+#[cfg(target_os = "linux")]
+#[repr(C, align(16))]
+#[derive(Clone, Copy)]
+struct SavedSigaction([u8; 256]);
+
+#[cfg(target_os = "linux")]
+extern "C" {
+    fn sigaction(signum: i32, act: *const SavedSigaction, oldact: *mut SavedSigaction) -> i32;
+}
+
+#[cfg(target_os = "linux")]
+impl AppSignalHandlers {
+    const SIGNALS: [i32; 3] = [1 /* SIGHUP */, 2 /* SIGINT */, 15 /* SIGTERM */];
+
+    fn save() -> Self {
+        Self(Self::SIGNALS.map(|signal| {
+            let mut saved = SavedSigaction([0; 256]);
+            // SAFETY: a null `act` only reads the handler into `saved`.
+            unsafe { sigaction(signal, ptr::null(), &mut saved) };
+            (signal, saved)
+        }))
+    }
+
+    fn restore(&self) {
+        for (signal, saved) in &self.0 {
+            // SAFETY: `saved` is what `sigaction` wrote for this signal.
+            unsafe { sigaction(*signal, saved, ptr::null_mut()) };
+        }
+    }
 }
 
 /// True when `pid` is alive (signal 0 probe).
@@ -2276,7 +2388,7 @@ pub fn prepare() -> Result<()> {
 
 /// True once `cef_initialize` has run.
 pub fn is_initialized() -> bool {
-    runtime()
+    loaded_runtime()
         .map(|runtime| runtime.state.lock().unwrap().initialized)
         .unwrap_or(false)
 }
@@ -3502,7 +3614,7 @@ unsafe extern "system" fn life_span_on_before_close(
     browser: *mut ffi::cef_browser_t,
 ) {
     release_param(browser);
-    if let Ok(runtime) = runtime() {
+    if let Some(runtime) = loaded_runtime() {
         let _ = runtime.live_browsers.fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
             Some(count.saturating_sub(1))
         });
@@ -3542,7 +3654,7 @@ unsafe extern "system" fn completion_on_complete(self_: *mut ffi::cef_completion
 /// launch. Waits for the store's answer on the loop, bounded; harmless to
 /// call more than once or with pages still open.
 pub fn flush_profile() {
-    let Ok(runtime) = runtime() else {
+    let Some(runtime) = loaded_runtime() else {
         return;
     };
     {
@@ -4670,7 +4782,7 @@ pub fn bootstrap() -> Result<BootstrapResult> {
 }
 
 fn do_message_loop_work_impl() {
-    if let Ok(runtime) = runtime() {
+    if let Some(runtime) = loaded_runtime() {
         let should_pump = {
             let state = runtime.state.lock().unwrap();
             state.initialized && !state.shutting_down
@@ -4688,7 +4800,7 @@ pub fn do_message_loop_work() {
 }
 
 pub fn shutdown() {
-    let Ok(runtime) = runtime() else {
+    let Some(runtime) = loaded_runtime() else {
         return;
     };
     {

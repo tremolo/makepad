@@ -195,6 +195,24 @@ mod ffi;
 #[cfg(any(target_os = "macos", windows, all(target_os = "linux", not(target_env = "ohos"))))]
 mod native;
 
+#[cfg(any(windows, all(target_os = "linux", not(target_env = "ohos"))))]
+pub use native::set_dist_dir;
+
+#[cfg(any(target_os = "macos", windows, all(target_os = "linux", not(target_env = "ohos"))))]
+pub use native::set_profile_dir;
+
+/// Name the browser profile directory; there is no browser on this platform.
+#[cfg(not(any(target_os = "macos", windows, all(target_os = "linux", not(target_env = "ohos")))))]
+pub fn set_profile_dir(_dir: std::path::PathBuf) {}
+
+/// Name the CEF distribution to load; nothing to name on this platform.
+#[cfg(not(any(windows, all(target_os = "linux", not(target_env = "ohos")))))]
+pub fn set_dist_dir(_dir: std::path::PathBuf) {}
+
+/// Fetch and unpack a CEF distribution at runtime (feature `install`).
+#[cfg(feature = "install")]
+pub mod install;
+
 #[cfg(any(target_os = "macos", windows, all(target_os = "linux", not(target_env = "ohos"))))]
 pub use native::{
     accelerated_paint_requested, background_color, bootstrap, do_message_loop_work, initialize,

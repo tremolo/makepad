@@ -310,12 +310,13 @@ pub fn archives_for(index_json: &str, platform: &str) -> Result<Vec<Archive>, St
                 if cef_version.is_empty() {
                     return Err("cef index: a version entry without cef_version".into());
                 }
+                let wanted = archive_type();
                 for (ty, name, sha1, size) in files {
-                    if ty != "standard" {
+                    if ty != wanted {
                         continue;
                     }
                     if name.is_empty() {
-                        return Err(format!("cef index: {cef_version} has a standard file without a name"));
+                        return Err(format!("cef index: {cef_version} has a {wanted} file without a name"));
                     }
                     out.push(Archive { cef_version: cef_version.clone(), channel: channel.clone(), name, sha1, size });
                 }
@@ -402,9 +403,43 @@ impl Pointer {
 
 // ------------------------------------------------------------- the fetch
 
-/// Progress goes to cargo as warnings: a build that sits for minutes on a
-/// 300 MB download must say so.
+/// Where progress goes: set by an app installing at runtime
+/// (`makepad_cef::install`); the build script leaves it unset.
+type Reporter = Box<dyn Fn(&str) + Send + Sync>;
+static REPORTER: std::sync::Mutex<Option<Reporter>> = std::sync::Mutex::new(None);
+
+/// Report progress to `report` instead of cargo.
+#[allow(dead_code)]
+pub fn set_reporter(report: Reporter) {
+    if let Ok(mut reporter) = REPORTER.lock() {
+        *reporter = Some(report);
+    }
+}
+
+/// The index file type the archive is picked from: `standard` for a build
+/// (headers, libcef, symbols), `minimal` for an app that only runs it.
+static ARCHIVE_TYPE: std::sync::Mutex<&'static str> = std::sync::Mutex::new("standard");
+
+#[allow(dead_code)]
+pub fn set_archive_type(archive_type: &'static str) {
+    if let Ok(mut wanted) = ARCHIVE_TYPE.lock() {
+        *wanted = archive_type;
+    }
+}
+
+fn archive_type() -> &'static str {
+    ARCHIVE_TYPE.lock().map(|wanted| *wanted).unwrap_or("standard")
+}
+
+/// Progress goes to cargo as warnings (a build that sits for minutes on a
+/// 300 MB download must say so), or to the app's reporter.
 fn say(msg: &str) {
+    if let Ok(reporter) = REPORTER.lock() {
+        if let Some(report) = reporter.as_ref() {
+            report(msg);
+            return;
+        }
+    }
     println!("cargo:warning=cef: {msg}");
 }
 

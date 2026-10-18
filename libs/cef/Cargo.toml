@@ -8,6 +8,13 @@ license = "MIT OR Apache-2.0"
 [dependencies]
 libloading = { path = "../vulkan/libloading", version = "0.8.9" }
 makepad-error-log = { path = "../error_log", version = "1.0.0" }
+# Feature `install`: fetch a distribution at runtime (src/install.rs).
+makepad-network = { path = "../../platform/network", version = "1.0.0", optional = true }
+bzip2 = { version = "0.6", default-features = false, features = ["bzip2-sys"], optional = true }
+tar = { version = "0.4", optional = true }
+
+[features]
+install = ["dep:makepad-network", "dep:bzip2", "dep:tar"]
 
 [target.'cfg(target_os = "macos")'.dependencies]
 makepad-objc-sys = { path = "../objc-sys", version = "1.0.0" }
