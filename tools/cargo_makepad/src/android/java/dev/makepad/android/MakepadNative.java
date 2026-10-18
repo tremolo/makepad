@@ -21,6 +21,11 @@ public class MakepadNative {
     public native static void onBackPressed();
     public native static void onBackGesture(int state, float touchX, float touchY, float progress, int edge, long timeMillis);
 
+    // A system browser's (WebView's) page started or finished loading, and
+    // a line its page wrote to the console.
+    public native static void onSystemBrowserPage(long browserId, String url, boolean loading);
+    public native static void onSystemBrowserConsole(long browserId, int level, String message, String source, int line);
+
     // belongs to QuadSurface class
     public native static void surfaceOnSurfaceCreated(Surface surface);
     public native static void surfaceOnSurfaceDestroyed(Surface surface);

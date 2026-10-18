@@ -1829,6 +1829,101 @@ pub unsafe fn to_java_detach_system_browser(browser_id: LiveId, close: bool) {
     }
 }
 
+/// One line a system browser's page wrote to its console (WebView's
+/// `onConsoleMessage`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SystemBrowserConsoleMessage {
+    /// Chromium's severity, as CEF reports it: 1 debug, 2 log or info,
+    /// 3 warning, 4 error.
+    pub level: i32,
+    pub message: String,
+    pub source: String,
+    pub line: i32,
+}
+
+/// What a system browser's page reported: its loads and its console.
+#[derive(Default)]
+struct SystemBrowserPage {
+    url: String,
+    loading: bool,
+    console: std::collections::VecDeque<SystemBrowserConsoleMessage>,
+}
+
+/// Console lines kept per browser until the app takes them.
+const SYSTEM_BROWSER_CONSOLE_LINES: usize = 500;
+
+static SYSTEM_BROWSER_PAGES: Mutex<std::collections::BTreeMap<u64, SystemBrowserPage>> =
+    Mutex::new(std::collections::BTreeMap::new());
+
+/// What the page of system browser `browser_id` wrote to its console since
+/// the last call, oldest first.
+pub fn take_system_browser_console(browser_id: LiveId) -> Vec<SystemBrowserConsoleMessage> {
+    SYSTEM_BROWSER_PAGES
+        .lock()
+        .ok()
+        .and_then(|mut pages| {
+            pages
+                .get_mut(&browser_id.get_value())
+                .map(|page| page.console.drain(..).collect())
+        })
+        .unwrap_or_default()
+}
+
+/// Whether the page of system browser `browser_id` is loading, and its
+/// address; `None` before it started one.
+pub fn system_browser_page_state(browser_id: LiveId) -> Option<(bool, String)> {
+    let pages = SYSTEM_BROWSER_PAGES.lock().ok()?;
+    let page = pages.get(&browser_id.get_value())?;
+    Some((page.loading, page.url.clone()))
+}
+
+pub(crate) fn forget_system_browser(browser_id: LiveId) {
+    if let Ok(mut pages) = SYSTEM_BROWSER_PAGES.lock() {
+        pages.remove(&browser_id.get_value());
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn Java_dev_makepad_android_MakepadNative_onSystemBrowserPage(
+    env: *mut jni_sys::JNIEnv,
+    _class: jni_sys::jclass,
+    browser_id: jni_sys::jlong,
+    url: jni_sys::jstring,
+    loading: jni_sys::jboolean,
+) {
+    let url = jstring_to_string(env, url);
+    if let Ok(mut pages) = SYSTEM_BROWSER_PAGES.lock() {
+        let page = pages.entry(browser_id as u64).or_default();
+        page.url = url;
+        page.loading = loading != 0;
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn Java_dev_makepad_android_MakepadNative_onSystemBrowserConsole(
+    env: *mut jni_sys::JNIEnv,
+    _class: jni_sys::jclass,
+    browser_id: jni_sys::jlong,
+    level: jni_sys::jint,
+    message: jni_sys::jstring,
+    source: jni_sys::jstring,
+    line: jni_sys::jint,
+) {
+    let message = SystemBrowserConsoleMessage {
+        level,
+        message: jstring_to_string(env, message),
+        source: jstring_to_string(env, source),
+        line,
+    };
+    if let Ok(mut pages) = SYSTEM_BROWSER_PAGES.lock() {
+        let console = &mut pages.entry(browser_id as u64).or_default().console;
+        if console.len() == SYSTEM_BROWSER_CONSOLE_LINES {
+            console.pop_front();
+        }
+        console.push_back(message);
+    }
+}
+
 /// `MakepadActivity.openUrl`: an ACTION_VIEW Intent for `url`.
 pub unsafe fn to_java_open_url(url: &str) {
     let env = attach_jni_env();

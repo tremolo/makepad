@@ -2894,6 +2894,7 @@ impl Cx {
                 },
                 CxOsOp::CloseSystemBrowser { browser_id } => unsafe {
                     android_jni::to_java_detach_system_browser(browser_id, true);
+                    android_jni::forget_system_browser(browser_id);
                 },
                 CxOsOp::CheckPermission {
                     permission,
