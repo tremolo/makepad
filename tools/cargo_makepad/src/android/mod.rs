@@ -97,6 +97,7 @@ impl AndroidVariant {
                     android:debuggable="{debuggable_str}"
                     android:largeHeap="true"
                     android:enableOnBackInvokedCallback="true"
+                    android:networkSecurityConfig="@xml/network_security_config"
                     tools:targetApi="{target_sdk_version}">
                     <!-- Lets adb shell attach simpleperf to a release build (API 29+, ignored below). -->
                     <profileable android:shell="true" tools:targetApi="29" />
@@ -188,6 +189,7 @@ impl AndroidVariant {
                     android:debuggable="{debuggable_str}"
                     android:largeHeap="true"
                     android:enableOnBackInvokedCallback="true"
+                    android:networkSecurityConfig="@xml/network_security_config"
                     tools:targetApi="{target_sdk_version}">
                     <profileable android:shell="true" tools:targetApi="29" />
                     <!-- Quest 3-only CPU/GPU trade: prefer one extra CPU level over one GPU level. -->
