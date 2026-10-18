@@ -1160,7 +1160,8 @@ pub struct cef_browser_host_t {
     pub zoom: cef_unused_callback_t,
     pub get_default_zoom_level: cef_unused_callback_t,
     pub get_zoom_level: cef_unused_callback_t,
-    pub set_zoom_level: cef_unused_callback_t,
+    pub set_zoom_level:
+        Option<unsafe extern "system" fn(self_: *mut cef_browser_host_t, zoom_level: f64)>,
     pub run_file_dialog: cef_unused_callback_t,
     pub start_download: cef_unused_callback_t,
     pub download_image: Option<
