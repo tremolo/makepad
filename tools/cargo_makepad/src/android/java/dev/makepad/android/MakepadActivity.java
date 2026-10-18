@@ -56,6 +56,8 @@ import android.view.View;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.webkit.WebChromeClient;
+import android.webkit.ConsoleMessage;
 import android.view.ViewConfiguration;
 import android.view.ViewGroup;
 import android.view.ViewTreeObserver;
@@ -3073,8 +3075,35 @@ public class MakepadActivity
                     settings.setMediaPlaybackRequiresUserGesture(false);
                     settings.setBuiltInZoomControls(true);
                     settings.setDisplayZoomControls(false);
-                    // Links open inside the view, not in another app.
-                    browser.setWebViewClient(new WebViewClient());
+                    // Links open inside the view, not in another app; the
+                    // page's loads and its console go to native code.
+                    browser.setWebViewClient(new WebViewClient() {
+                        @Override
+                        public void onPageStarted(WebView view, String pageUrl, android.graphics.Bitmap favicon) {
+                            MakepadNative.onSystemBrowserPage(browserId, pageUrl, true);
+                        }
+
+                        @Override
+                        public void onPageFinished(WebView view, String pageUrl) {
+                            MakepadNative.onSystemBrowserPage(browserId, pageUrl, false);
+                        }
+                    });
+                    browser.setWebChromeClient(new WebChromeClient() {
+                        @Override
+                        public boolean onConsoleMessage(ConsoleMessage message) {
+                            // Chromium's severities, as CEF reports them.
+                            int level;
+                            switch (message.messageLevel()) {
+                                case ERROR: level = 4; break;
+                                case WARNING: level = 3; break;
+                                case DEBUG: level = 1; break;
+                                default: level = 2; break;
+                            }
+                            MakepadNative.onSystemBrowserConsole(browserId, level,
+                                message.message(), message.sourceId(), message.lineNumber());
+                            return false;
+                        }
+                    });
                     browser.setVisibility(View.INVISIBLE);
                     mSystemBrowsers.put(browserId, browser);
                     mSystemBrowserOverlay.addView(browser, new FrameLayout.LayoutParams(1, 1));
