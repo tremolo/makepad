@@ -410,6 +410,27 @@ static REPORTER: std::sync::Mutex<Option<Reporter>> = std::sync::Mutex::new(None
 
 /// Report progress to `report` instead of cargo.
 #[allow(dead_code)]
+/// Download progress in bytes (loaded, total if known), at most every MB:
+/// set by an app that draws a bar (`makepad_cef::install`).
+pub type ProgressReporter = Box<dyn Fn(u64, Option<u64>) + Send + Sync>;
+
+static PROGRESS_REPORTER: std::sync::Mutex<Option<ProgressReporter>> =
+    std::sync::Mutex::new(None);
+
+pub fn set_progress_reporter(report: ProgressReporter) {
+    if let Ok(mut reporter) = PROGRESS_REPORTER.lock() {
+        *reporter = Some(report);
+    }
+}
+
+fn report_bytes(loaded: u64, total: Option<u64>) {
+    if let Ok(reporter) = PROGRESS_REPORTER.lock() {
+        if let Some(report) = reporter.as_ref() {
+            report(loaded, total);
+        }
+    }
+}
+
 pub fn set_reporter(report: Reporter) {
     if let Ok(mut reporter) = REPORTER.lock() {
         *reporter = Some(report);
@@ -461,7 +482,14 @@ fn http_get<W: Write>(
         });
         if report_progress {
             let last = AtomicU64::new(0);
+            let last_bytes = AtomicU64::new(0);
             request = request.on_body_progress(move |loaded, total| {
+                if loaded.saturating_sub(last_bytes.load(Ordering::Relaxed)) >= 1_000_000
+                    || Some(loaded) == total
+                {
+                    last_bytes.store(loaded, Ordering::Relaxed);
+                    report_bytes(loaded, total);
+                }
                 let previous = last.load(Ordering::Relaxed);
                 if loaded.saturating_sub(previous) >= 50_000_000 {
                     last.store(loaded, Ordering::Relaxed);

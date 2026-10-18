@@ -4368,6 +4368,17 @@ impl Browser {
         answers
     }
 
+    /// Zoom the page: 0.0 is 100 %, each step of 1.0 is a factor of 1.2
+    /// (Chromium's zoom levels). Chromium keeps it for the page's origin.
+    pub fn set_zoom_level(&mut self, level: f64) -> Result<()> {
+        self.with_host(|host| unsafe {
+            if let Some(set_zoom_level) = (*host).set_zoom_level {
+                set_zoom_level(host, level);
+            }
+            Ok(())
+        })
+    }
+
     pub fn resize(&mut self, width: usize, height: usize, scale_factor: f32) -> Result<()> {
         let width = width.max(1);
         let height = height.max(1);

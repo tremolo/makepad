@@ -436,6 +436,10 @@ impl Browser {
         Ok(())
     }
 
+    pub fn set_zoom_level(&mut self, _level: f64) -> Result<()> {
+        Ok(())
+    }
+
     pub fn reload(&mut self) -> Result<()> {
         Ok(())
     }

@@ -38,9 +38,20 @@ pub fn install(
     root: &Path,
     report: impl Fn(&str) + Send + Sync + 'static,
 ) -> Result<PathBuf, String> {
+    install_with_progress(root, report, |_, _| {})
+}
+
+/// [`install`], and `progress` hears the download in bytes (loaded, and
+/// the total when the server says), at most every MB: for a progress bar.
+pub fn install_with_progress(
+    root: &Path,
+    report: impl Fn(&str) + Send + Sync + 'static,
+    progress: impl Fn(u64, Option<u64>) + Send + Sync + 'static,
+) -> Result<PathBuf, String> {
     let platform = platform().ok_or("CEF is not built for this platform")?;
     cef_dist::set_archive_type("minimal");
     cef_dist::set_reporter(Box::new(report));
+    cef_dist::set_progress_reporter(Box::new(progress));
     let dir = cef_dist::ensure_dist(root, platform, None, false)?;
     if let Ok(entries) = std::fs::read_dir(root) {
         for entry in entries.flatten() {

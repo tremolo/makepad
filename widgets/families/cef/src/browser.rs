@@ -142,6 +142,13 @@ pub struct Browser {
     accel_target_size: Option<(usize, usize)>,
     #[rust]
     accel_frame_counter: u64,
+    /// The page zoom the app asked for (`BrowserRef::set_zoom_level`), and
+    /// the zoom and navigation it was last applied to: a navigation can
+    /// land on another origin, which has a zoom of its own.
+    #[rust]
+    zoom_level: f64,
+    #[rust]
+    zoom_applied: Option<(u64, u64)>,
 }
 
 impl Browser {
@@ -219,6 +226,7 @@ impl Browser {
         self.wanted_size = None;
         self.wanted_at = None;
         self.last_url.clear();
+        self.zoom_applied = None;
     }
 
     fn sync_system_browser(&mut self, cx: &mut Cx) {
@@ -1008,6 +1016,12 @@ impl Browser {
         let mut latest_frame = None;
         let mut accelerated_dirty = false;
         if let Some(browser) = &mut self.cef_browser {
+            if !browser.is_loading() {
+                let key = (self.zoom_level.to_bits(), browser.nav_generation());
+                if self.zoom_applied != Some(key) && browser.set_zoom_level(self.zoom_level).is_ok() {
+                    self.zoom_applied = Some(key);
+                }
+            }
             while let Some(frame) = browser.take_frame() {
                 latest_frame = Some(frame);
             }
@@ -1482,6 +1496,18 @@ impl BrowserRef {
     pub fn set_visible(&self, cx: &mut Cx, visible: bool) {
         if let Some(mut inner) = self.borrow_mut() {
             inner.set_visible_internal(cx, visible);
+        }
+    }
+
+    /// Zoom the page (CEF): 0.0 is 100 %, each step of 1.0 a factor of 1.2.
+    /// Kept for the next page too.
+    pub fn set_zoom_level(&self, cx: &mut Cx, level: f64) {
+        if let Some(mut inner) = self.borrow_mut() {
+            if inner.zoom_level != level {
+                inner.zoom_level = level;
+                inner.zoom_applied = None;
+                inner.redraw(cx);
+            }
         }
     }
 
