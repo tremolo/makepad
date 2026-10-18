@@ -154,11 +154,11 @@ impl Browser {
     fn resolved_backend(&self) -> ActiveBrowserBackend {
         match self.backend {
             BrowserBackend::Native => {
-                #[cfg(any(target_os = "macos", target_os = "ios"))]
+                #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
                 {
                     return ActiveBrowserBackend::Native;
                 }
-                #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+                #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "android")))]
                 {
                     return ActiveBrowserBackend::Unsupported;
                 }
@@ -174,7 +174,7 @@ impl Browser {
     fn unsupported_backend_message(&self) -> &'static str {
         match self.backend {
             BrowserBackend::Native => {
-                "Native browser backend is currently only implemented on macOS and iOS"
+                "Native browser backend is currently only implemented on macOS, iOS and Android"
             }
             BrowserBackend::CEF => "CEF browser backend requires the `cef` feature",
         }

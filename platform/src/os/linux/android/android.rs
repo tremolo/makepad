@@ -2793,6 +2793,51 @@ impl Cx {
                         }
                     }
                 }
+                // The platform web view: an android.webkit.WebView placed
+                // over the surface at the widget's rect, like the camera
+                // preview (MakepadActivity.spawnSystemBrowser and friends).
+                CxOsOp::SpawnSystemBrowser { browser_id, url } => unsafe {
+                    android_jni::to_java_spawn_system_browser(browser_id, &url);
+                },
+                CxOsOp::UpdateSystemBrowser {
+                    browser_id,
+                    area,
+                    visible,
+                } => {
+                    let rect = area.clipped_rect(self);
+                    let rect =
+                        self.windows[CxWindowPool::id_zero()].layout_rect_to_physical_pixels(rect);
+                    let left = rect.pos.x as i32;
+                    let top = rect.pos.y as i32;
+                    let right = (rect.pos.x + rect.size.x) as i32;
+                    let bottom = (rect.pos.y + rect.size.y) as i32;
+                    unsafe {
+                        android_jni::to_java_update_system_browser(
+                            browser_id,
+                            left,
+                            top,
+                            right,
+                            bottom,
+                            visible && right > left && bottom > top,
+                        );
+                    }
+                }
+                CxOsOp::DetachSystemBrowser { browser_id } => unsafe {
+                    android_jni::to_java_detach_system_browser(browser_id, false);
+                },
+                CxOsOp::SetSystemBrowserUrl {
+                    browser_id,
+                    url,
+                    replace,
+                } => unsafe {
+                    android_jni::to_java_set_system_browser_url(browser_id, &url, replace);
+                },
+                CxOsOp::SystemBrowserHistoryGo { browser_id, delta } => unsafe {
+                    android_jni::to_java_system_browser_history_go(browser_id, delta);
+                },
+                CxOsOp::CloseSystemBrowser { browser_id } => unsafe {
+                    android_jni::to_java_detach_system_browser(browser_id, true);
+                },
                 CxOsOp::CheckPermission {
                     permission,
                     request_id,

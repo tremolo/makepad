@@ -53,6 +53,9 @@ import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.view.View;
+import android.webkit.WebSettings;
+import android.webkit.WebView;
+import android.webkit.WebViewClient;
 import android.view.ViewConfiguration;
 import android.view.ViewGroup;
 import android.view.ViewTreeObserver;
@@ -1117,6 +1120,9 @@ public class MakepadActivity
     private ImageView mSurfaceSnapshotOverlay;
     private FrameLayout mCameraPreviewOverlay;
     private HashMap<Long, CameraPreviewSurface> mCameraPreviewViews = new HashMap<>();
+    // The platform web views (CxOsOp::*SystemBrowser), over the surface.
+    private FrameLayout mSystemBrowserOverlay;
+    private HashMap<Long, WebView> mSystemBrowsers = new HashMap<>();
     private FrameLayout mMpmuxQrScannerOverlay;
     private SurfaceView mMpmuxQrScannerPreview;
     private View mMpmuxQrScannerResultOverlay;
@@ -1396,6 +1402,9 @@ public class MakepadActivity
         mCameraPreviewOverlay = new FrameLayout(this);
         mRootLayout.addView(mCameraPreviewOverlay);
 
+        mSystemBrowserOverlay = new FrameLayout(this);
+        mRootLayout.addView(mSystemBrowserOverlay);
+
         mSelectionHandleOverlay = new FrameLayout(this);
         mSelectionHandleOverlay.setLayoutParams(new FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
@@ -1464,6 +1473,9 @@ public class MakepadActivity
         restoreSurfaceViewForWarmResumeIfNeeded();
         updateTaskDescription();
         MakepadNative.activityOnResume();
+        for (WebView browser : mSystemBrowsers.values()) {
+            browser.onResume();
+        }
         reportPhysicalKeyboardIfChanged();
         resumePendingMpmuxUpdateDownload();
         scheduleMpmuxStartupUpdateCheck();
@@ -1473,6 +1485,9 @@ public class MakepadActivity
     @Override
     protected void onPause() {
         mIsResumed = false;
+        for (WebView browser : mSystemBrowsers.values()) {
+            browser.onPause();
+        }
         stopMpmuxQrScanner();
         prepareSurfaceSnapshotOverlayForPause();
         super.onPause();
@@ -1498,6 +1513,13 @@ public class MakepadActivity
             }
             mCameraPreviewViews.clear();
             mCameraPreviewOverlay.removeAllViews();
+        }
+        for (WebView browser : mSystemBrowsers.values()) {
+            browser.destroy();
+        }
+        mSystemBrowsers.clear();
+        if (mSystemBrowserOverlay != null) {
+            mSystemBrowserOverlay.removeAllViews();
         }
         if (mSelectionHandleOverlay != null) {
             mSelectionHandleOverlay.removeAllViews();
@@ -3027,6 +3049,121 @@ public class MakepadActivity
                 lp.topMargin = top;
                 preview.setLayoutParams(lp);
                 preview.setVisibility(visible ? View.VISIBLE : View.INVISIBLE);
+            }
+        });
+    }
+
+    // The platform web view (CxOsOp::SpawnSystemBrowser and friends): an
+    // android.webkit.WebView in mSystemBrowserOverlay, placed at the
+    // widget's rect in physical pixels. It stays hidden until the first
+    // update places it, and keeps its page while detached (hidden).
+    public void spawnSystemBrowser(final long browserId, final String url) {
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                if (mSystemBrowserOverlay == null) {
+                    return;
+                }
+                WebView browser = mSystemBrowsers.get(browserId);
+                if (browser == null) {
+                    browser = new WebView(MakepadActivity.this);
+                    WebSettings settings = browser.getSettings();
+                    settings.setJavaScriptEnabled(true);
+                    settings.setDomStorageEnabled(true);
+                    settings.setMediaPlaybackRequiresUserGesture(false);
+                    settings.setBuiltInZoomControls(true);
+                    settings.setDisplayZoomControls(false);
+                    // Links open inside the view, not in another app.
+                    browser.setWebViewClient(new WebViewClient());
+                    browser.setVisibility(View.INVISIBLE);
+                    mSystemBrowsers.put(browserId, browser);
+                    mSystemBrowserOverlay.addView(browser, new FrameLayout.LayoutParams(1, 1));
+                }
+                if (url != null && !url.isEmpty()) {
+                    browser.loadUrl(url);
+                }
+            }
+        });
+    }
+
+    public void updateSystemBrowser(final long browserId, final int left, final int top, final int right, final int bottom, final boolean visible) {
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                WebView browser = mSystemBrowsers.get(browserId);
+                if (browser == null) {
+                    return;
+                }
+                FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) browser.getLayoutParams();
+                int width = Math.max(1, right - left);
+                int height = Math.max(1, bottom - top);
+                if (lp == null || lp.width != width || lp.height != height
+                    || lp.leftMargin != left || lp.topMargin != top) {
+                    lp = new FrameLayout.LayoutParams(width, height);
+                    lp.leftMargin = left;
+                    lp.topMargin = top;
+                    browser.setLayoutParams(lp);
+                }
+                int visibility = visible ? View.VISIBLE : View.INVISIBLE;
+                if (browser.getVisibility() != visibility) {
+                    browser.setVisibility(visibility);
+                }
+            }
+        });
+    }
+
+    public void setSystemBrowserUrl(final long browserId, final String url, final boolean replace) {
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                WebView browser = mSystemBrowsers.get(browserId);
+                if (browser == null || url == null) {
+                    return;
+                }
+                browser.loadUrl(url);
+                if (replace) {
+                    browser.clearHistory();
+                }
+            }
+        });
+    }
+
+    public void systemBrowserHistoryGo(final long browserId, final int delta) {
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                WebView browser = mSystemBrowsers.get(browserId);
+                if (browser != null && browser.canGoBackOrForward(delta)) {
+                    browser.goBackOrForward(delta);
+                }
+            }
+        });
+    }
+
+    public void detachSystemBrowser(final long browserId) {
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                WebView browser = mSystemBrowsers.get(browserId);
+                if (browser != null) {
+                    browser.setVisibility(View.INVISIBLE);
+                }
+            }
+        });
+    }
+
+    public void closeSystemBrowser(final long browserId) {
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                WebView browser = mSystemBrowsers.remove(browserId);
+                if (browser == null) {
+                    return;
+                }
+                if (mSystemBrowserOverlay != null) {
+                    mSystemBrowserOverlay.removeView(browser);
+                }
+                browser.destroy();
             }
         });
     }

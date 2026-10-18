@@ -1686,6 +1686,91 @@ pub unsafe fn to_java_copy_to_clipboard(content: String) {
     );
 }
 
+/// `MakepadActivity.spawnSystemBrowser`: an android.webkit.WebView for
+/// `browser_id` over the Makepad surface, loading `url` (hidden until the
+/// first update places it).
+pub unsafe fn to_java_spawn_system_browser(browser_id: LiveId, url: &str) {
+    let env = attach_jni_env();
+    let Some(url) = new_jstring(env, url) else { return };
+    ndk_utils::call_void_method!(
+        env,
+        get_activity(),
+        "spawnSystemBrowser",
+        "(JLjava/lang/String;)V",
+        browser_id.get_value() as jni_sys::jlong,
+        url
+    );
+    (**env).DeleteLocalRef.unwrap()(env, url);
+}
+
+/// `MakepadActivity.updateSystemBrowser`: place the WebView at the given
+/// physical-pixel rect and show or hide it.
+pub unsafe fn to_java_update_system_browser(
+    browser_id: LiveId,
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+    visible: bool,
+) {
+    let env = attach_jni_env();
+    ndk_utils::call_void_method!(
+        env,
+        get_activity(),
+        "updateSystemBrowser",
+        "(JIIIIZ)V",
+        browser_id.get_value() as jni_sys::jlong,
+        left,
+        top,
+        right,
+        bottom,
+        visible as jni_sys::jboolean as std::ffi::c_uint
+    );
+}
+
+/// `MakepadActivity.setSystemBrowserUrl`: load `url` (`replace`: without a
+/// new history entry).
+pub unsafe fn to_java_set_system_browser_url(browser_id: LiveId, url: &str, replace: bool) {
+    let env = attach_jni_env();
+    let Some(url) = new_jstring(env, url) else { return };
+    ndk_utils::call_void_method!(
+        env,
+        get_activity(),
+        "setSystemBrowserUrl",
+        "(JLjava/lang/String;Z)V",
+        browser_id.get_value() as jni_sys::jlong,
+        url,
+        replace as jni_sys::jboolean as std::ffi::c_uint
+    );
+    (**env).DeleteLocalRef.unwrap()(env, url);
+}
+
+/// `MakepadActivity.systemBrowserHistoryGo`: back (< 0) or forward (> 0).
+pub unsafe fn to_java_system_browser_history_go(browser_id: LiveId, delta: i32) {
+    let env = attach_jni_env();
+    ndk_utils::call_void_method!(
+        env,
+        get_activity(),
+        "systemBrowserHistoryGo",
+        "(JI)V",
+        browser_id.get_value() as jni_sys::jlong,
+        delta as jni_sys::jint
+    );
+}
+
+/// `MakepadActivity.detachSystemBrowser`: hide the WebView, keeping its
+/// page; `closeSystemBrowser`: destroy it.
+pub unsafe fn to_java_detach_system_browser(browser_id: LiveId, close: bool) {
+    let env = attach_jni_env();
+    let browser_id = browser_id.get_value() as jni_sys::jlong;
+    // One call site per method: the macro caches the method id per site.
+    if close {
+        ndk_utils::call_void_method!(env, get_activity(), "closeSystemBrowser", "(J)V", browser_id);
+    } else {
+        ndk_utils::call_void_method!(env, get_activity(), "detachSystemBrowser", "(J)V", browser_id);
+    }
+}
+
 /// `MakepadActivity.openUrl`: an ACTION_VIEW Intent for `url`.
 pub unsafe fn to_java_open_url(url: &str) {
     let env = attach_jni_env();
