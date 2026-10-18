@@ -1,7 +1,7 @@
 use crate::{
     ffi, AudioCaptureConfig, AudioCaptureStats, AudioEvent, AudioFormat, AudioPacket,
-    BootstrapResult, CapturedFrame, CaptureTimestamp, ConsoleMessage, Error, Evaluation, Frame,
-    Result, TEXT_INPUT_MODE_NONE,
+    BootstrapResult, CapturedFrame, CaptureTimestamp, ConsoleMessage, ContextMenu, EditCommand,
+    Error, Evaluation, Frame, Result, TEXT_INPUT_MODE_NONE,
 };
 
 /// A diagnostic line on stderr that survives a closed pipe. A browser hosted
@@ -296,6 +296,7 @@ struct CefApi {
     cef_get_exit_code: unsafe extern "C" fn() -> c_int,
     cef_shutdown: unsafe extern "C" fn(),
     cef_do_message_loop_work: unsafe extern "C" fn(),
+    cef_string_userfree_utf16_free: unsafe extern "C" fn(value: ffi::cef_string_userfree_t),
     cef_cookie_manager_get_global_manager: unsafe extern "C" fn(
         callback: *mut ffi::cef_completion_callback_t,
     ) -> *mut ffi::cef_cookie_manager_t,
@@ -414,6 +415,8 @@ struct SharedBrowserState {
     /// `window.open` / target=_blank requests, cancelled as native popups and
     /// handed to the embedder to open as tabs.
     popup_requests: Mutex<Vec<String>>,
+    /// The latest right-click on the page, until the embedder takes it.
+    context_menu: Mutex<Option<ContextMenu>>,
     /// The latest decoded favicon bitmap (BGRA, premultiplied).
     favicon: Mutex<Option<Frame>>,
     favicon_url: Mutex<String>,
@@ -560,11 +563,19 @@ struct ClientHandler {
     load_handler: *mut LoadHandler,
     life_span_handler: *mut LifeSpanHandler,
     audio_handler: *mut AudioHandler,
+    context_menu_handler: *mut ContextMenuHandler,
 }
 
 #[repr(C)]
 struct AudioHandler {
     cef_audio_handler: ffi::cef_audio_handler_t,
+    ref_count: AtomicUsize,
+    state: Arc<SharedBrowserState>,
+}
+
+#[repr(C)]
+struct ContextMenuHandler {
+    cef_context_menu_handler: ffi::cef_context_menu_handler_t,
     ref_count: AtomicUsize,
     state: Arc<SharedBrowserState>,
 }
@@ -656,6 +667,14 @@ impl_ref_counted!(
     no_drop_hook
 );
 impl_ref_counted!(
+    ContextMenuHandler,
+    context_menu_add_ref,
+    context_menu_release,
+    context_menu_has_one_ref,
+    context_menu_has_at_least_one_ref,
+    no_drop_hook
+);
+impl_ref_counted!(
     DisplayHandler,
     display_add_ref,
     display_release,
@@ -706,6 +725,18 @@ unsafe fn cef_string_to_string(value: *const ffi::cef_string_t) -> String {
         return String::new();
     }
     String::from_utf16_lossy(slice::from_raw_parts(value.str_, value.length))
+}
+
+/// Take a string CEF handed over (`cef_string_userfree_t`) and free it.
+unsafe fn take_userfree_string(value: ffi::cef_string_userfree_t) -> String {
+    if value.is_null() {
+        return String::new();
+    }
+    let text = cef_string_to_string(value);
+    if let Some(runtime) = loaded_runtime() {
+        (runtime.api.cef_string_userfree_utf16_free)(value);
+    }
+    text
 }
 
 /// Hand a handler pointer back to CEF with an extra reference, the way every
@@ -1019,6 +1050,10 @@ fn load_runtime() -> Result<Runtime> {
                 cef_get_exit_code: load_symbol(&library, b"cef_get_exit_code\0")?,
                 cef_shutdown: load_symbol(&library, b"cef_shutdown\0")?,
                 cef_do_message_loop_work: load_symbol(&library, b"cef_do_message_loop_work\0")?,
+                cef_string_userfree_utf16_free: load_symbol(
+                    &library,
+                    b"cef_string_userfree_utf16_free\0",
+                )?,
                 cef_cookie_manager_get_global_manager: load_symbol(
                     &library,
                     b"cef_cookie_manager_get_global_manager\0",
@@ -2512,6 +2547,11 @@ unsafe extern "system" fn client_release(self_: *mut ffi::cef_base_ref_counted_t
         if !(*client).audio_handler.is_null() {
             release_ref_counted(&mut (*(*client).audio_handler).cef_audio_handler.base as *mut _);
         }
+        if !(*client).context_menu_handler.is_null() {
+            release_ref_counted(
+                &mut (*(*client).context_menu_handler).cef_context_menu_handler.base as *mut _,
+            );
+        }
         drop(Box::from_raw(client));
         1
     } else {
@@ -2753,6 +2793,76 @@ unsafe extern "system" fn client_get_render_handler(
         return &mut (*render).cef_render_handler;
     }
     ptr::null_mut()
+}
+
+unsafe extern "system" fn client_get_context_menu_handler(
+    self_: *mut ffi::cef_client_t,
+) -> *mut c_void {
+    let client = self_ as *mut ClientHandler;
+    add_ref_and_return((*client).context_menu_handler) as *mut c_void
+}
+
+/// A right-click on the page: note what it was on for the embedder, and
+/// empty CEF's menu so CEF shows nothing (an off-screen browser has no
+/// window to show one in anyway).
+unsafe extern "system" fn context_menu_on_before_context_menu(
+    self_: *mut ffi::cef_context_menu_handler_t,
+    browser: *mut ffi::cef_browser_t,
+    frame: *mut ffi::cef_frame_t,
+    params: *mut ffi::cef_context_menu_params_t,
+    model: *mut ffi::cef_menu_model_t,
+) {
+    let handler = self_ as *mut ContextMenuHandler;
+    if !params.is_null() {
+        let int = |get: Option<unsafe extern "system" fn(*mut ffi::cef_context_menu_params_t) -> c_int>| {
+            get.map(|get| get(params)).unwrap_or(0)
+        };
+        let text = |get: Option<
+            unsafe extern "system" fn(*mut ffi::cef_context_menu_params_t) -> ffi::cef_string_userfree_t,
+        >| { get.map(|get| take_userfree_string(get(params))).unwrap_or_default() };
+        let type_flags = int((*params).get_type_flags);
+        let edit_flags = int((*params).get_edit_state_flags);
+        let image = int((*params).has_image_contents) != 0
+            && int((*params).get_media_type) == ffi::CM_MEDIATYPE_IMAGE;
+        let menu = ContextMenu {
+            x: int((*params).get_xcoord),
+            y: int((*params).get_ycoord),
+            page_url: text((*params).get_page_url),
+            link_url: if type_flags & ffi::CM_TYPEFLAG_LINK != 0 {
+                text((*params).get_link_url)
+            } else {
+                String::new()
+            },
+            image_url: if image && type_flags & ffi::CM_TYPEFLAG_MEDIA != 0 {
+                text((*params).get_source_url)
+            } else {
+                String::new()
+            },
+            selection_text: if type_flags & ffi::CM_TYPEFLAG_SELECTION != 0 {
+                text((*params).get_selection_text)
+            } else {
+                String::new()
+            },
+            editable: int((*params).is_editable) != 0,
+            can_undo: edit_flags & ffi::CM_EDITFLAG_CAN_UNDO != 0,
+            can_redo: edit_flags & ffi::CM_EDITFLAG_CAN_REDO != 0,
+            can_cut: edit_flags & ffi::CM_EDITFLAG_CAN_CUT != 0,
+            can_copy: edit_flags & ffi::CM_EDITFLAG_CAN_COPY != 0,
+            can_paste: edit_flags & ffi::CM_EDITFLAG_CAN_PASTE != 0,
+            can_select_all: edit_flags & ffi::CM_EDITFLAG_CAN_SELECT_ALL != 0,
+        };
+        let state = &(*handler).state;
+        *state.context_menu.lock().unwrap() = Some(menu);
+        release_param(params);
+    }
+    if !model.is_null() {
+        if let Some(clear) = (*model).clear {
+            clear(model);
+        }
+        release_param(model);
+    }
+    release_param(browser);
+    release_param(frame);
 }
 
 unsafe extern "system" fn client_get_display_handler(self_: *mut ffi::cef_client_t) -> *mut c_void {
@@ -3800,6 +3910,7 @@ impl ClientHandler {
         load_handler: *mut LoadHandler,
         life_span_handler: *mut LifeSpanHandler,
         audio_handler: *mut AudioHandler,
+        context_menu_handler: *mut ContextMenuHandler,
     ) -> *mut ClientHandler {
         Box::into_raw(Box::new(Self {
             cef_client: ffi::cef_client_t {
@@ -3812,7 +3923,7 @@ impl ClientHandler {
                 },
                 get_audio_handler: Some(client_get_audio_handler),
                 get_command_handler: Some(client_null_handler),
-                get_context_menu_handler: Some(client_null_handler),
+                get_context_menu_handler: Some(client_get_context_menu_handler),
                 get_dialog_handler: Some(client_null_handler),
                 get_display_handler: Some(client_get_display_handler),
                 get_download_handler: Some(client_null_handler),
@@ -3836,6 +3947,32 @@ impl ClientHandler {
             load_handler,
             life_span_handler,
             audio_handler,
+            context_menu_handler,
+        }))
+    }
+}
+
+impl ContextMenuHandler {
+    fn allocate(state: Arc<SharedBrowserState>) -> *mut ContextMenuHandler {
+        Box::into_raw(Box::new(Self {
+            cef_context_menu_handler: ffi::cef_context_menu_handler_t {
+                base: ffi::cef_base_ref_counted_t {
+                    size: std::mem::size_of::<ffi::cef_context_menu_handler_t>(),
+                    add_ref: Some(context_menu_add_ref),
+                    release: Some(context_menu_release),
+                    has_one_ref: Some(context_menu_has_one_ref),
+                    has_at_least_one_ref: Some(context_menu_has_at_least_one_ref),
+                },
+                on_before_context_menu: Some(context_menu_on_before_context_menu),
+                run_context_menu: None,
+                on_context_menu_command: None,
+                on_context_menu_dismissed: None,
+                run_quick_menu: None,
+                on_quick_menu_command: None,
+                on_quick_menu_dismissed: None,
+            },
+            ref_count: AtomicUsize::new(1),
+            state,
         }))
     }
 }
@@ -3985,12 +4122,14 @@ impl Browser {
         let load_handler = LoadHandler::allocate(state.clone());
         let life_span_handler = LifeSpanHandler::allocate(state.clone());
         let audio_handler = AudioHandler::allocate(state.clone());
+        let context_menu_handler = ContextMenuHandler::allocate(state.clone());
         let client = ClientHandler::allocate(
             render_handler,
             display_handler,
             load_handler,
             life_span_handler,
             audio_handler,
+            context_menu_handler,
         );
         let accelerated = accelerated_paint_available() && !options.software_frames;
 
@@ -4293,6 +4432,30 @@ impl Browser {
     }
 
     /// URLs the page asked to open in a new window (cancelled as popups).
+    /// The latest right-click on the page, once: what it was on, for the
+    /// embedder's menu (CEF shows none of its own).
+    pub fn take_context_menu(&mut self) -> Option<ContextMenu> {
+        self.state.context_menu.lock().unwrap().take()
+    }
+
+    /// Run an edit command on the page, as its menu would.
+    pub fn edit(&mut self, command: EditCommand) -> Result<()> {
+        self.with_main_frame(|frame| unsafe {
+            let run = match command {
+                EditCommand::Undo => (*frame).undo,
+                EditCommand::Redo => (*frame).redo,
+                EditCommand::Cut => (*frame).cut,
+                EditCommand::Copy => (*frame).copy,
+                EditCommand::Paste => (*frame).paste,
+                EditCommand::SelectAll => (*frame).select_all,
+            };
+            if let Some(run) = run {
+                run(frame);
+            }
+            Ok(())
+        })
+    }
+
     pub fn take_popup_requests(&mut self) -> Vec<String> {
         std::mem::take(&mut *self.state.popup_requests.lock().unwrap())
     }

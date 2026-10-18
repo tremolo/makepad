@@ -90,7 +90,6 @@ pub type cef_cursor_handle_t = *mut c_void;
 pub type cef_cursor_info_t = c_void;
 pub type cef_zoom_command_t = c_int;
 pub type cef_file_dialog_mode_t = c_int;
-pub type cef_point_t = c_void;
 pub type cef_pdf_print_settings_t = c_void;
 pub type cef_registration_t = c_void;
 pub type cef_dev_tools_message_observer_t = c_void;
@@ -620,6 +619,91 @@ pub struct cef_render_handler_t {
     >,
 }
 
+/// `cef_context_menu_handler_t` (include/capi/cef_context_menu_handler_capi.h).
+#[repr(C)]
+pub struct cef_context_menu_handler_t {
+    pub base: cef_base_ref_counted_t,
+    pub on_before_context_menu: Option<
+        unsafe extern "system" fn(
+            self_: *mut cef_context_menu_handler_t,
+            browser: *mut cef_browser_t,
+            frame: *mut cef_frame_t,
+            params: *mut cef_context_menu_params_t,
+            model: *mut cef_menu_model_t,
+        ),
+    >,
+    pub run_context_menu: cef_unused_callback_t,
+    pub on_context_menu_command: cef_unused_callback_t,
+    pub on_context_menu_dismissed: cef_unused_callback_t,
+    pub run_quick_menu: cef_unused_callback_t,
+    pub on_quick_menu_command: cef_unused_callback_t,
+    pub on_quick_menu_dismissed: cef_unused_callback_t,
+}
+
+/// `cef_context_menu_params_t`: what was under the pointer. CEF owns it;
+/// only read through a pointer, so the unused tail is left out.
+#[repr(C)]
+pub struct cef_context_menu_params_t {
+    pub base: cef_base_ref_counted_t,
+    pub get_xcoord: Option<unsafe extern "system" fn(self_: *mut cef_context_menu_params_t) -> c_int>,
+    pub get_ycoord: Option<unsafe extern "system" fn(self_: *mut cef_context_menu_params_t) -> c_int>,
+    pub get_type_flags:
+        Option<unsafe extern "system" fn(self_: *mut cef_context_menu_params_t) -> c_int>,
+    pub get_link_url: Option<
+        unsafe extern "system" fn(self_: *mut cef_context_menu_params_t) -> cef_string_userfree_t,
+    >,
+    pub get_unfiltered_link_url: cef_unused_callback_t,
+    pub get_source_url: Option<
+        unsafe extern "system" fn(self_: *mut cef_context_menu_params_t) -> cef_string_userfree_t,
+    >,
+    pub has_image_contents:
+        Option<unsafe extern "system" fn(self_: *mut cef_context_menu_params_t) -> c_int>,
+    pub get_title_text: cef_unused_callback_t,
+    pub get_page_url: Option<
+        unsafe extern "system" fn(self_: *mut cef_context_menu_params_t) -> cef_string_userfree_t,
+    >,
+    pub get_frame_url: cef_unused_callback_t,
+    pub get_frame_charset: cef_unused_callback_t,
+    pub get_media_type:
+        Option<unsafe extern "system" fn(self_: *mut cef_context_menu_params_t) -> c_int>,
+    pub get_media_state_flags: cef_unused_callback_t,
+    pub get_selection_text: Option<
+        unsafe extern "system" fn(self_: *mut cef_context_menu_params_t) -> cef_string_userfree_t,
+    >,
+    pub get_misspelled_word: cef_unused_callback_t,
+    pub get_dictionary_suggestions: cef_unused_callback_t,
+    pub is_editable: Option<unsafe extern "system" fn(self_: *mut cef_context_menu_params_t) -> c_int>,
+    pub is_spell_check_enabled: cef_unused_callback_t,
+    pub get_edit_state_flags:
+        Option<unsafe extern "system" fn(self_: *mut cef_context_menu_params_t) -> c_int>,
+}
+
+/// `cef_menu_model_t`, only as far as `clear` (CEF owns it).
+#[repr(C)]
+pub struct cef_menu_model_t {
+    pub base: cef_base_ref_counted_t,
+    pub is_sub_menu: cef_unused_callback_t,
+    pub clear: Option<unsafe extern "system" fn(self_: *mut cef_menu_model_t) -> c_int>,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct cef_point_t {
+    pub x: c_int,
+    pub y: c_int,
+}
+
+pub const CM_TYPEFLAG_LINK: c_int = 1 << 2;
+pub const CM_TYPEFLAG_MEDIA: c_int = 1 << 3;
+pub const CM_TYPEFLAG_SELECTION: c_int = 1 << 4;
+pub const CM_MEDIATYPE_IMAGE: c_int = 1;
+pub const CM_EDITFLAG_CAN_UNDO: c_int = 1 << 0;
+pub const CM_EDITFLAG_CAN_REDO: c_int = 1 << 1;
+pub const CM_EDITFLAG_CAN_CUT: c_int = 1 << 2;
+pub const CM_EDITFLAG_CAN_COPY: c_int = 1 << 3;
+pub const CM_EDITFLAG_CAN_PASTE: c_int = 1 << 4;
+pub const CM_EDITFLAG_CAN_SELECT_ALL: c_int = 1 << 6;
+
 #[repr(C)]
 pub struct cef_client_t {
     pub base: cef_base_ref_counted_t,
@@ -1091,14 +1175,14 @@ pub struct cef_download_image_callback_t {
 pub struct cef_frame_t {
     pub base: cef_base_ref_counted_t,
     pub is_valid: cef_unused_callback_t,
-    pub undo: cef_unused_callback_t,
-    pub redo: cef_unused_callback_t,
-    pub cut: cef_unused_callback_t,
-    pub copy: cef_unused_callback_t,
-    pub paste: cef_unused_callback_t,
+    pub undo: Option<unsafe extern "system" fn(self_: *mut cef_frame_t)>,
+    pub redo: Option<unsafe extern "system" fn(self_: *mut cef_frame_t)>,
+    pub cut: Option<unsafe extern "system" fn(self_: *mut cef_frame_t)>,
+    pub copy: Option<unsafe extern "system" fn(self_: *mut cef_frame_t)>,
+    pub paste: Option<unsafe extern "system" fn(self_: *mut cef_frame_t)>,
     pub paste_and_match_style: cef_unused_callback_t,
     pub del: cef_unused_callback_t,
-    pub select_all: cef_unused_callback_t,
+    pub select_all: Option<unsafe extern "system" fn(self_: *mut cef_frame_t)>,
     pub view_source: cef_unused_callback_t,
     pub get_source: cef_unused_callback_t,
     pub get_text: cef_unused_callback_t,
@@ -1178,9 +1262,17 @@ pub struct cef_browser_host_t {
     pub print_to_pdf: cef_unused_callback_t,
     pub find: cef_unused_callback_t,
     pub stop_finding: cef_unused_callback_t,
-    pub show_dev_tools: cef_unused_callback_t,
-    pub close_dev_tools: cef_unused_callback_t,
-    pub has_dev_tools: cef_unused_callback_t,
+    pub show_dev_tools: Option<
+        unsafe extern "system" fn(
+            self_: *mut cef_browser_host_t,
+            window_info: *const cef_window_info_t,
+            client: *mut cef_client_t,
+            settings: *const cef_browser_settings_t,
+            inspect_element_at: *const cef_point_t,
+        ),
+    >,
+    pub close_dev_tools: Option<unsafe extern "system" fn(self_: *mut cef_browser_host_t)>,
+    pub has_dev_tools: Option<unsafe extern "system" fn(self_: *mut cef_browser_host_t) -> c_int>,
     pub send_dev_tools_message: Option<unsafe extern "system" fn(
         self_: *mut cef_browser_host_t, message: *const c_void, message_size: usize,
     ) -> c_int>,

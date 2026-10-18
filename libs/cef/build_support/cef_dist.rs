@@ -417,6 +417,8 @@ pub type ProgressReporter = Box<dyn Fn(u64, Option<u64>) + Send + Sync>;
 static PROGRESS_REPORTER: std::sync::Mutex<Option<ProgressReporter>> =
     std::sync::Mutex::new(None);
 
+// Used by `install` (the app), not by the build script.
+#[allow(dead_code)]
 pub fn set_progress_reporter(report: ProgressReporter) {
     if let Ok(mut reporter) = PROGRESS_REPORTER.lock() {
         *reporter = Some(report);
@@ -431,6 +433,8 @@ fn report_bytes(loaded: u64, total: Option<u64>) {
     }
 }
 
+// Used by `install` (the app), not by the build script.
+#[allow(dead_code)]
 pub fn set_reporter(report: Reporter) {
     if let Ok(mut reporter) = REPORTER.lock() {
         *reporter = Some(report);
