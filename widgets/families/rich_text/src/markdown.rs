@@ -1,6 +1,11 @@
 use crate::{
-    link_label::LinkLabel, makepad_derive_widget::*, makepad_draw::*, text_flow::TextFlow,
-    widget::*, WidgetMatchEvent,
+    html::{HtmlLinkAction, HtmlLinkWidgetRefExt},
+    link_label::LinkLabel,
+    makepad_derive_widget::*,
+    makepad_draw::*,
+    text_flow::TextFlow,
+    widget::*,
+    WidgetMatchEvent,
 };
 
 use pulldown_cmark::{
@@ -211,7 +216,14 @@ script_mod! {
             space_2: uniform(theme.space_2)
         }
 
-        link := mod.widgets.MarkdownLink{}
+        // Links draw through the text flow (an `HtmlLink`): on the text's
+        // baseline, at its size, wrapping with it. A click raises
+        // `MarkdownAction::LinkNavigated`; the text keeps the key focus.
+        link := mod.widgets.HtmlLink{
+            grab_key_focus: false
+            color: theme.color_label_inner
+            pressed_color: theme.color_label_inner_down
+        }
     }
 }
 
@@ -259,7 +271,20 @@ impl Widget for Markdown {
     }
 
     fn handle_event(&mut self, cx: &mut Cx, event: &Event, scope: &mut Scope) {
-        self.text_flow.handle_event(cx, event, scope);
+        let actions = cx.capture_actions(|cx| self.text_flow.handle_event(cx, event, scope));
+        // A link's click, as the Markdown's own action too.
+        let hrefs: Vec<String> = actions
+            .iter()
+            .filter_map(|action| action.as_widget_action())
+            .filter_map(|action| match action.cast::<HtmlLinkAction>() {
+                HtmlLinkAction::Clicked { url, .. } => Some(url),
+                _ => None,
+            })
+            .collect();
+        cx.extend_actions(actions);
+        for href in hrefs {
+            cx.widget_action(self.widget_uid(), MarkdownAction::LinkNavigated(href));
+        }
     }
 
     fn draw_walk(&mut self, cx: &mut Cx2d, _scope: &mut Scope, walk: Walk) -> DrawStep {
@@ -294,6 +319,9 @@ impl Markdown {
         // column index within its row. Both are reset when a new table starts.
         let mut table_alignments: Vec<Alignment> = Vec::new();
         let mut table_cell_index: usize = 0;
+        // The link being read: its target and its text, drawn as one link
+        // when it ends.
+        let mut link: Option<(String, String)> = None;
 
         let parser = Parser::new_ext(
             self.body.as_ref(),
@@ -394,13 +422,19 @@ impl Markdown {
                     tf.underline.pop();
                 }
                 MdEvent::Start(Tag::Link { dest_url, .. }) => {
-                    self.auto_id += 1;
-                    let item = tf.item(cx, LiveId(self.auto_id), live_id!(link));
-                    item.as_markdown_link().set_href(&dest_url);
-                    item.draw_all_unscoped(cx);
+                    link = Some((dest_url.to_string(), String::new()));
                 }
                 MdEvent::End(TagEnd::Link) => {
-                    // Link handling is done in Start event
+                    // The link's text is the link, drawn by it into the flow.
+                    if let Some((href, text)) = link.take() {
+                        self.auto_id += 1;
+                        let item = tf.item(cx, LiveId(self.auto_id), live_id!(link));
+                        item.as_html_link().set_url(&href);
+                        item.set_text(cx, if text.is_empty() { &href } else { &text });
+                        let hold = tf.begin_inline_content(cx);
+                        item.draw_all(cx, &mut Scope::with_data(tf));
+                        tf.end_inline_content(cx, hold);
+                    }
                 }
                 MdEvent::Start(Tag::Image {
                     dest_url, title, ..
@@ -468,6 +502,11 @@ impl Markdown {
                     }
                 }
                 // Inline code
+                MdEvent::Code(text) if link.is_some() => {
+                    if let Some((_, link_text)) = &mut link {
+                        link_text.push_str(&text);
+                    }
+                }
                 MdEvent::Code(text) => {
                     tf.push_size_rel_scale(tf.fixed_font_size_scale);
                     tf.fixed.push();
@@ -523,6 +562,8 @@ impl Markdown {
                         self.splash_block_string.push_str(&text);
                     } else if self.in_code_block {
                         self.code_block_string.push_str(&text);
+                    } else if let Some((_, link_text)) = &mut link {
+                        link_text.push_str(text.trim_end_matches('\n'));
                     } else {
                         tf.draw_text(cx, &text.trim_end_matches("\n"));
                     }
@@ -532,6 +573,8 @@ impl Markdown {
                         self.splash_block_string.push('\n');
                     } else if self.in_code_block {
                         self.code_block_string.push('\n');
+                    } else if let Some((_, link_text)) = &mut link {
+                        link_text.push(' ');
                     } else {
                         tf.draw_text(cx, " ");
                     }
