@@ -821,17 +821,24 @@ impl Splitter {
         } else {
             cx.end_turtle_with_area(&mut self.area_a);
         }
-        match self.axis {
+        let bar_walk = match self.axis {
             SplitterAxis::Horizontal => {
                 self.draw_bg.is_vertical = 1.0;
-                self.draw_bg
-                    .draw_walk(cx, Walk::new(Size::Fixed(self.size), Size::fill()));
+                Walk::new(Size::Fixed(self.size), Size::fill())
             }
             SplitterAxis::Vertical => {
                 self.draw_bg.is_vertical = 0.0;
-                self.draw_bg
-                    .draw_walk(cx, Walk::new(Size::fill(), Size::Fixed(self.size)));
+                Walk::new(Size::fill(), Size::Fixed(self.size))
             }
+        };
+        if self.collapse != SplitterCollapse::None && !self.bar_reopens {
+            // A folded bar that cannot bring its pane back is no control:
+            // it keeps its room but draws nothing, and nothing hovers or
+            // drags it. Only the host unfolds it.
+            cx.walk_turtle(bar_walk);
+            self.draw_bg.draw_vars.area = Area::Empty;
+        } else {
+            self.draw_bg.draw_walk(cx, bar_walk);
         }
         // The bar is the control, so the bar is what the keyboard reaches.
         if self.key_step > 0.0 {
