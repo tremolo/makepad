@@ -1115,6 +1115,9 @@ public class MakepadActivity
     private boolean mIsResumed = false;
     private BroadcastReceiver mMpmuxUpdateDownloadReceiver;
     private long mMpmuxUpdateDownloadId = -1;
+    // The download last checked and offered for install: a second
+    // completion for it (the broadcast, then a resume) does nothing.
+    private long mMpmuxUpdateHandledDownloadId = -1;
     private String mMpmuxUpdateExpectedSha256;
     private String mMpmuxUpdateVersionLabel;
     private boolean mMpmuxStartupUpdateCheckScheduled = false;
@@ -3963,6 +3966,10 @@ public class MakepadActivity
 
     private void handleMpmuxUpdateDownloadComplete(long downloadId) {
         clearMpmuxUpdateDownloadReceiver();
+        if (downloadId == mMpmuxUpdateHandledDownloadId) {
+            return;
+        }
+        mMpmuxUpdateHandledDownloadId = downloadId;
         DownloadManager downloadManager = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
         if (downloadManager == null) {
             Toast.makeText(this, "Android DownloadManager is unavailable", Toast.LENGTH_LONG).show();
@@ -4076,7 +4083,9 @@ public class MakepadActivity
     }
 
     private File copyDownloadedApkForPackageValidation(DownloadManager downloadManager, long downloadId) throws IOException {
-        File validationApk = new File(getCacheDir(), "mpmux-update-validation.apk");
+        // A file of its own per check: two checks never read or delete the
+        // other's copy.
+        File validationApk = File.createTempFile("mpmux-update-validation-", ".apk", getCacheDir());
         try (ParcelFileDescriptor descriptor = downloadManager.openDownloadedFile(downloadId);
              FileInputStream input = new FileInputStream(descriptor.getFileDescriptor());
              FileOutputStream output = new FileOutputStream(validationApk, false)) {
@@ -4085,6 +4094,11 @@ public class MakepadActivity
             while ((read = input.read(buffer)) != -1) {
                 output.write(buffer, 0, read);
             }
+        } catch (IOException err) {
+            if (!validationApk.delete()) {
+                validationApk.deleteOnExit();
+            }
+            throw err;
         }
         return validationApk;
     }
