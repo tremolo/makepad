@@ -1164,6 +1164,7 @@ public class MakepadActivity
     private View mMpmuxQrScannerResultOverlay;
     private android.hardware.Camera mMpmuxQrScannerCamera;
     private boolean mMpmuxQrScannerActive = false;
+    private OnBackInvokedCallback mMpmuxQrScannerBackCallback;
     private boolean mMpmuxQrScannerFound = false;
     private boolean mMpmuxQrScannerPairingNotificationPending = false;
     private ResultPoint[] mMpmuxQrScannerResultPoints;
@@ -4269,6 +4270,13 @@ public class MakepadActivity
         }
 
         mMpmuxQrScannerActive = true;
+        // With predictive back (API 33+) Back goes to the app's callback and never reaches
+        // dispatchKeyEvent or onBackPressed, so the scanner takes it first while it shows.
+        if (Build.VERSION.SDK_INT >= 33 && mMpmuxQrScannerBackCallback == null) {
+            mMpmuxQrScannerBackCallback = this::stopMpmuxQrScanner;
+            getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+                OnBackInvokedDispatcher.PRIORITY_OVERLAY, mMpmuxQrScannerBackCallback);
+        }
         mMpmuxQrScannerOverlay = new FrameLayout(this);
         mMpmuxQrScannerOverlay.setBackgroundColor(Color.BLACK);
         mMpmuxQrScannerPreview = new SurfaceView(this);
@@ -4633,6 +4641,10 @@ public class MakepadActivity
         mMpmuxQrScannerResultHeight = 0;
         mMpmuxQrScannerFound = false;
         mMpmuxQrScannerActive = false;
+        if (mMpmuxQrScannerBackCallback != null) {
+            getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback(mMpmuxQrScannerBackCallback);
+            mMpmuxQrScannerBackCallback = null;
+        }
     }
 
     private void stopMpmuxQrScannerCamera() {
