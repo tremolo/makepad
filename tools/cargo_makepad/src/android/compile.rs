@@ -336,14 +336,34 @@ fn host_bin_name(host_os: HostOs, bin_filename: &str, windows_extension: &str) -
 /// the caller's flags, `-C prefer-dynamic` when asked, the
 /// `--cfg android_target="<arch>"` the platform crate reads, and
 /// `-Z allow-features=`: the workspace's `RUSTC_BOOTSTRAP=1` (.cargo/config.toml)
-/// reaches this build too, and RUSTFLAGS replaces the config's flags.
+/// reaches this build too, and RUSTFLAGS replaces the config's flags. A workspace
+/// without the bootstrap (an app outside this repository) builds with a stable rustc,
+/// which refuses any `-Z` flag, so it gets none.
 pub fn android_rustflags(
     existing: Option<&str>,
     android_target: &AndroidTarget,
     prefer_dynamic: bool,
 ) -> String {
     let cfg_flag = format!("--cfg android_target=\"{}\"", android_target.to_str());
-    compose_android_rustflags(existing, &cfg_flag, prefer_dynamic)
+    let bootstrapped = std::env::current_dir().is_ok_and(|cwd| rustc_bootstrapped(&cwd));
+    compose_android_rustflags(existing, &cfg_flag, prefer_dynamic, bootstrapped)
+}
+
+/// Whether the rustc of a build in `dir` runs under `RUSTC_BOOTSTRAP`: set in the
+/// environment, or in the `.cargo/config.toml` of `dir` or one of its parents.
+fn rustc_bootstrapped(dir: &Path) -> bool {
+    if std::env::var_os("RUSTC_BOOTSTRAP").is_some_and(|value| !value.is_empty()) {
+        return true;
+    }
+    dir.ancestors().any(|dir| {
+        ["config.toml", "config"].iter().any(|name| {
+            std::fs::read_to_string(dir.join(".cargo").join(name)).is_ok_and(|config| {
+                config
+                    .lines()
+                    .any(|line| line.trim_start().starts_with("RUSTC_BOOTSTRAP"))
+            })
+        })
+    })
 }
 
 fn main_java(url: &str, host: bool) -> String {
@@ -896,7 +916,12 @@ fn rust_build(
 /// prebuilt copy of that library is only 4 KB-page aligned, which fails Google
 /// Play's 16 KB page-size requirement for apps targeting Android 15+. Static
 /// `std` keeps the app a single self-contained, NDK-linked (16 KB-aligned) `.so`.
-fn compose_android_rustflags(existing: Option<&str>, cfg_flag: &str, prefer_dynamic: bool) -> String {
+fn compose_android_rustflags(
+    existing: Option<&str>,
+    cfg_flag: &str,
+    prefer_dynamic: bool,
+    bootstrapped: bool,
+) -> String {
     let mut rustflags = existing.unwrap_or_default().trim().to_string();
     if prefer_dynamic {
         let has_prefer_dynamic = rustflags
@@ -922,7 +947,7 @@ fn compose_android_rustflags(existing: Option<&str>, cfg_flag: &str, prefer_dyna
         rustflags.push_str(cfg_flag.trim());
     }
     // the caller's own allow list (`-Z allow-features=a,b` or `-Zallow-features=..`) stands
-    if !rustflags.split_whitespace().any(|token| token.starts_with("allow-features=") || token.starts_with("-Zallow-features=")) {
+    if bootstrapped && !rustflags.split_whitespace().any(|token| token.starts_with("allow-features=") || token.starts_with("-Zallow-features=")) {
         if !rustflags.is_empty() {
             rustflags.push(' ');
         }
@@ -3950,7 +3975,7 @@ default via 192.0.2.1 dev wlan0 proto dhcp src 192.0.2.42 metric 303\n\
     #[test]
     fn compose_android_rustflags_adds_prefer_dynamic() {
         assert_eq!(
-            compose_android_rustflags(None, "--cfg android_target=\"aarch64\"", true),
+            compose_android_rustflags(None, "--cfg android_target=\"aarch64\"", true, true),
             "-C prefer-dynamic --cfg android_target=\"aarch64\" -Z allow-features="
         );
     }
@@ -3958,7 +3983,7 @@ default via 192.0.2.1 dev wlan0 proto dhcp src 192.0.2.42 metric 303\n\
     #[test]
     fn compose_android_rustflags_preserves_existing_flags() {
         assert_eq!(
-            compose_android_rustflags(Some("-C debuginfo=1"), "--cfg android_target=\"aarch64\"", true),
+            compose_android_rustflags(Some("-C debuginfo=1"), "--cfg android_target=\"aarch64\"", true, true),
             "-C debuginfo=1 -C prefer-dynamic --cfg android_target=\"aarch64\" -Z allow-features="
         );
     }
@@ -3969,6 +3994,7 @@ default via 192.0.2.1 dev wlan0 proto dhcp src 192.0.2.42 metric 303\n\
             compose_android_rustflags(
                 Some("-C prefer-dynamic -C debuginfo=1"),
                 "--cfg android_target=\"aarch64\"",
+                true,
                 true,
             ),
             "-C prefer-dynamic -C debuginfo=1 --cfg android_target=\"aarch64\" -Z allow-features="
@@ -3982,15 +4008,24 @@ default via 192.0.2.1 dev wlan0 proto dhcp src 192.0.2.42 metric 303\n\
                 Some("-C debuginfo=1"),
                 "--cfg android_target=\"aarch64\"",
                 false,
+                true,
             ),
             "-C debuginfo=1 --cfg android_target=\"aarch64\" -Z allow-features="
         );
     }
 
     #[test]
+    fn compose_android_rustflags_leaves_out_unstable_flags_without_the_bootstrap() {
+        assert_eq!(
+            compose_android_rustflags(None, "--cfg android_target=\"aarch64\"", false, false),
+            "--cfg android_target=\"aarch64\""
+        );
+    }
+
+    #[test]
     fn compose_android_rustflags_keeps_the_callers_allow_list() {
         assert_eq!(
-            compose_android_rustflags(Some("-Z allow-features=test"), "--cfg android_target=\"aarch64\"", false),
+            compose_android_rustflags(Some("-Z allow-features=test"), "--cfg android_target=\"aarch64\"", false, true),
             "-Z allow-features=test --cfg android_target=\"aarch64\""
         );
     }
