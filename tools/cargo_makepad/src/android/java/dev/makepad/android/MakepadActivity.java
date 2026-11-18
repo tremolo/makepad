@@ -1743,6 +1743,7 @@ public class MakepadActivity
         mVideoPlaybackHandler = new Handler(mVideoPlaybackThread.getLooper());
         mVideoPlayerRunnables = new HashMap<Long, VideoPlayerRunnable>();
 
+        applyMpmuxHostControlLaunchExtra(getIntent());
         // The app starts as soon as it sees this activity, so its params have to be there first.
         sendAndroidParams();
         sendDisplayRotation();
@@ -1846,6 +1847,22 @@ public class MakepadActivity
         }
         //% MAIN_ACTIVITY_ON_CREATE
         
+    }
+
+    // Development-only mpmux host control listens only when an explicit launch intent asks
+    // (`am start ... --es mpmux.HOST_CONTROL_TCP_LISTEN <addr>`): the extra becomes
+    // MPMUX_HOST_CONTROL_TCP_LISTEN for the app, which starts once this activity exists.
+    // Unlike Studio settings it is not kept for later launches.
+    private void applyMpmuxHostControlLaunchExtra(Intent intent) {
+        String listen = intent != null ? intent.getStringExtra("mpmux.HOST_CONTROL_TCP_LISTEN") : null;
+        if (listen == null || listen.trim().isEmpty() || listen.equals(android.system.Os.getenv("MPMUX_HOST_CONTROL_TCP_LISTEN"))) {
+            return;
+        }
+        try {
+            android.system.Os.setenv("MPMUX_HOST_CONTROL_TCP_LISTEN", listen, true);
+        } catch (android.system.ErrnoException e) {
+            Log.w(LOG_TAG, "Failed to apply the mpmux host-control launch extra", e);
+        }
     }
 
     @Override
