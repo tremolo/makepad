@@ -456,8 +456,10 @@ pub(super) fn keycode(keysym: u32) -> KeyCode {
         0xffe1 | 0xffe2 => KeyCode::Shift,
         0xffe3 | 0xffe4 => KeyCode::Control,
 
-        0x003d => KeyCode::Equals,
-        0x002d => KeyCode::Minus,
+        // `+` and `_` (shifted on most layouts, unshifted on some) map to their
+        // keys, so Ctrl++ zooms on layouts where `+` is the key's own symbol.
+        0x003d | 0x002b => KeyCode::Equals,
+        0x002d | 0x005f => KeyCode::Minus,
         0x005d => KeyCode::RBracket,
         0x005b => KeyCode::LBracket,
         0xff0d => KeyCode::ReturnKey,
