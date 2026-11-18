@@ -600,6 +600,10 @@ impl crate::cx_api::CxOsApi for Cx {
     }
 
     fn seconds_since_app_start(&self) -> f64 {
+        // An app's own time override (UI capture with a fixed clock) wins.
+        if let Some(time) = Cx::global_app_time_override_secs() {
+            return time;
+        }
         if let Some(time) = crate::remote::app_clock::now() {
             return time;
         }
