@@ -462,6 +462,16 @@ unsafe extern "system" fn clipboard_paste(env: *mut JNIEnv, _: jclass, content: 
     if !text.is_empty() { Shared::global().emit(clock_ns(), |q, id| q.text(id, input::text::PASTE, text.as_bytes())); }
 }
 
+/// The activity was asked to open something (an ACTION_VIEW URI, a file as its path, or
+/// ACTION_SEND text): `Event::AppOpen`, as the OS's open requests are on the other backends.
+unsafe extern "system" fn app_open(env: *mut JNIEnv, _: jclass, item: jstring, is_path: jboolean, _at_launch: jboolean) {
+    let item = reg::string(env, item);
+    if item.is_empty() { return; }
+    let kind = if is_path != 0 { input::drag_item::FILE } else { input::drag_item::STRING };
+    let payload = crate::buffers::pack_drag_items(&[(kind, item.as_str())]);
+    Shared::global().emit(clock_ns(), |q, _| q.app_open(1, &payload));
+}
+
 /// The config of the soft keyboard last asked for, while it is up: a focused text input re-sends
 /// its show on every draw, and each one reaches Android's IME tracker (a show/cancel loop).
 static LAST_IME: Mutex<Option<u32>> = Mutex::new(None);
@@ -806,6 +816,7 @@ pub fn native_methods() -> Vec<(&'static str, &'static str, *mut c_void)> {
         ("onSelectionHandleDrag", "(IIFFJ)V", selection_handle as *mut c_void),
         ("onClipboardAction", "(Ljava/lang/String;)V", clipboard_action as *mut c_void),
         ("onClipboardPaste", "(Ljava/lang/String;)V", clipboard_paste as *mut c_void),
+        ("onAppOpen", "(Ljava/lang/String;ZZ)V", app_open as *mut c_void),
     ];
     methods.extend(super::a11y::native_methods());
     methods
