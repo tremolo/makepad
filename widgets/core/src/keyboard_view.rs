@@ -56,6 +56,8 @@ pub struct KeyboardView {
     #[live]
     keyboard_resize: bool,
     #[rust]
+    ignore_keyboard_shift: bool,
+    #[rust]
     next_frame: NextFrame,
     /// The `cx.ime_scope` around us, which we put back once our content is drawn.
     /// It's 0 if we're the outermost KeyboardView.
@@ -128,6 +130,9 @@ impl KeyboardView {
     ///
     /// With `keyboard_resize`, it's how much we shrink instead.
     fn compute_target_shift(&self, keyboard_height: f64, cx: &Cx) -> f64 {
+        if self.ignore_keyboard_shift {
+            return 0.0;
+        }
         if keyboard_height <= 0.0 || !self.owns_ime(cx) {
             return 0.0;
         }
@@ -185,6 +190,19 @@ impl KeyboardView {
         // Overlays like modals aren't inside any of us, so they pan along with the outermost one.
         if !self.keyboard_resize && self.outer_ime_scope == 0 {
             cx.keyboard_shift = self.keyboard_shift;
+        }
+    }
+
+    pub fn set_ignore_keyboard_shift(&mut self, cx: &mut Cx, ignore_keyboard_shift: bool) {
+        if self.ignore_keyboard_shift == ignore_keyboard_shift {
+            return;
+        }
+
+        self.ignore_keyboard_shift = ignore_keyboard_shift;
+        if ignore_keyboard_shift && self.keyboard_shift != 0.0 {
+            self.set_keyboard_shift(cx, 0.0);
+            self.anim_state = AnimState::Closed;
+            self.redraw(cx);
         }
     }
 
