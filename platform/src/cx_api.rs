@@ -32,10 +32,17 @@ use {
     },
     std::{
         any::{Any, TypeId},
+        cell::Cell,
         ops::Range,
         rc::Rc,
+        time::Instant,
     },
 };
+
+thread_local! {
+    static APP_TIME_OVERRIDE_SECS: Cell<Option<f64>> = const { Cell::new(None) };
+}
+
 pub enum OpenUrlInPlace {
     Yes,
     No,
@@ -664,6 +671,38 @@ impl Cx {
 }
 
 impl Cx {
+    pub fn global_app_time_override_secs() -> Option<f64> {
+        APP_TIME_OVERRIDE_SECS.with(Cell::get)
+    }
+
+    /// The app time a backend reports: the override when one is set, else
+    /// the seconds since `start_time`.
+    pub fn effective_app_time_for_start_time(start_time: Option<Instant>) -> f64 {
+        if let Some(override_secs) = Self::global_app_time_override_secs() {
+            return override_secs;
+        }
+        start_time
+            .map(|start_time| Instant::now().duration_since(start_time).as_secs_f64())
+            .unwrap_or_default()
+    }
+
+    pub fn app_time_override_secs(&self) -> Option<f64> {
+        Self::global_app_time_override_secs()
+    }
+
+    pub fn set_app_time_override_secs(&mut self, override_secs: Option<f64>) {
+        let sanitized = override_secs.filter(|secs| secs.is_finite() && *secs >= 0.0);
+        APP_TIME_OVERRIDE_SECS.with(|cell| cell.set(sanitized));
+    }
+
+    pub fn clear_app_time_override_secs(&mut self) {
+        self.set_app_time_override_secs(None);
+    }
+
+    pub fn current_app_time_secs(&self) -> f64 {
+        Self::global_app_time_override_secs().unwrap_or_else(|| self.seconds_since_app_start())
+    }
+
     pub fn in_draw_event(&self) -> bool {
         self.in_draw_event
     }
