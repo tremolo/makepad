@@ -1171,16 +1171,6 @@ pub struct GaussRoundedView {
     source: ScriptObjectRef,
     #[deref]
     view: View,
-    // Used to self-manage an inline overlay so the glass refracts the scene even when this
-    // view is placed in the normal (background) flow rather than inside a `glass.Layer`.
-    #[rust]
-    draw_list: Option<DrawList2d>,
-    // The redraw whose walk began the overlay and has not finished it: the view hands back a
-    // step when a child (a list asking for its rows) needs the caller, and the call that
-    // resumes it must not begin the overlay again, which would clear what the first part of
-    // the walk drew, background included.
-    #[rust]
-    overlay_began: Option<u64>,
     /// A still backdrop (`request_window_gauss_held`): the scene is captured once while the
     /// surface is up and again only on a resize, instead of on every frame it repaints in.
     #[live]
@@ -1836,26 +1826,14 @@ impl Widget for GaussRoundedView {
             self.bind_snapshot(cx, snapshot);
             self.view.draw_walk(cx, scope, walk)
         } else {
-            // In normal flow: open our own overlay so the glass can sample the blurred scene
-            // and refract the background beneath it (the layout space is still reserved in the
-            // current turtle, so it composes like any other widget).
-            if self.draw_list.is_none() {
-                self.draw_list = Some(DrawList2d::new(cx));
-            }
-            if self.overlay_began == Some(cx.cx.redraw_id) {
-                self.draw_list.as_mut().unwrap().resume_overlay(cx);
-            } else {
-                self.draw_list.as_mut().unwrap().begin_overlay_reuse(cx);
-                self.overlay_began = Some(cx.cx.redraw_id);
-            }
+            // MPMUX PATCH: draw inline in the normal flow instead of wrapping the whole
+            // subtree in a window-overlay sub-list. For full-window consumers (makepad's
+            // built-in KeyboardView body) that sub-list composites above the normal screen
+            // content and hides dialogs/overlays and window chrome behind it. Smaller glass
+            // widgets (`glass_panel.rs`) manage their own lens overlays and are unaffected.
             let snapshot = self.request(cx);
             self.bind_snapshot(cx, snapshot);
-            let step = self.view.draw_walk(cx, scope, walk);
-            self.draw_list.as_mut().unwrap().end(cx);
-            if step.is_done() {
-                self.overlay_began = None;
-            }
-            step
+            self.view.draw_walk(cx, scope, walk)
         }
     }
 }
