@@ -1,4 +1,5 @@
 use crate::{
+    html::{HtmlLinkAction, HtmlLinkWidgetRefExt},
     image::{ImageRef, ImageWidgetRefExt},
     image_cache::{looks_like_svg, AsyncImageLoad},
     link_label::LinkLabel,
@@ -225,7 +226,14 @@ script_mod! {
             space_2: uniform(theme.space_2)
         }
 
-        link := mod.widgets.MarkdownLink{}
+        // Links draw through the text flow (an `HtmlLink`): on the text's
+        // baseline, at its size, wrapping with it. A click raises
+        // `MarkdownAction::LinkNavigated`; the text keeps the key focus.
+        link := mod.widgets.HtmlLink{
+            grab_key_focus: false
+            color: theme.color_label_inner
+            pressed_color: theme.color_label_inner_down
+        }
         /** An inline `![alt](src)` image, sized by the Markdown to the
          * picture's natural size, scaled down to the available width. */
         inline_image := mod.widgets.Image{width: Fit height: Fit}
@@ -326,7 +334,26 @@ impl Widget for Markdown {
     }
 
     fn handle_event(&mut self, cx: &mut Cx, event: &Event, scope: &mut Scope) {
-        self.text_flow.handle_event(cx, event, scope);
+        let actions = cx.capture_actions(|cx| self.text_flow.handle_event(cx, event, scope));
+        // A link's click, as the Markdown's own action too. A restricted
+        // Splash must not hand its URLs to the host, which may open them.
+        let clicks: Vec<(String, KeyModifiers)> = actions
+            .iter()
+            .filter_map(|action| action.as_widget_action())
+            .filter_map(|action| match action.cast::<HtmlLinkAction>() {
+                HtmlLinkAction::Clicked { url, key_modifiers } => Some((url, key_modifiers)),
+                _ => None,
+            })
+            .collect();
+        cx.extend_actions(actions);
+        if !cx.script_data.std.host_io_only() {
+            for (url, modifiers) in clicks {
+                cx.widget_action(
+                    self.widget_uid(),
+                    MarkdownAction::LinkNavigated { url, modifiers },
+                );
+            }
+        }
         // An inline image's decode landed (its widget took the texture while
         // handling the same actions): lay the text out again around it.
         if let Event::Actions(actions) = event {
@@ -711,6 +738,9 @@ impl Markdown {
         // The flow's text length where each open block started, to tell an
         // empty block a caret anchor goes in.
         let mut block_text_starts: Vec<usize> = Vec::new();
+        // The link being read: its target and its text, drawn as one link
+        // when it ends.
+        let mut link: Option<(String, String)> = None;
 
         for (event, range) in events {
             // Only the event right after a marker is at the item's start.
@@ -868,14 +898,23 @@ impl Markdown {
                         tf.underline.pop();
                     }
                 }
+                // A host maps every text event to its source: its links stay
+                // mapped text.
+                MdEvent::Start(Tag::Link { .. }) if hosted => {}
                 MdEvent::Start(Tag::Link { dest_url, .. }) => {
-                    self.auto_id += 1;
-                    let item = tf.item(cx, LiveId(self.auto_id), live_id!(link));
-                    item.as_markdown_link().set_href(&dest_url);
-                    item.draw_all_unscoped(cx);
+                    link = Some((dest_url.to_string(), String::new()));
                 }
                 MdEvent::End(TagEnd::Link) => {
-                    // Link handling is done in Start event
+                    // The link's text is the link, drawn by it into the flow.
+                    if let Some((href, text)) = link.take() {
+                        self.auto_id += 1;
+                        let item = tf.item(cx, LiveId(self.auto_id), live_id!(link));
+                        item.as_html_link().set_url(&href);
+                        item.set_text(cx, if text.is_empty() { &href } else { &text });
+                        let hold = tf.begin_inline_content(cx);
+                        item.draw_all(cx, &mut Scope::with_data(tf));
+                        tf.end_inline_content(cx, hold);
+                    }
                 }
                 MdEvent::Start(Tag::Image { dest_url, .. }) => {
                     image_depth += 1;
@@ -981,6 +1020,11 @@ impl Markdown {
                     }
                 }
                 // Inline code
+                MdEvent::Code(text) if link.is_some() => {
+                    if let Some((_, link_text)) = &mut link {
+                        link_text.push_str(&text);
+                    }
+                }
                 MdEvent::Code(text) => {
                     tf.push_size_rel_scale(tf.fixed_font_size_scale);
                     tf.fixed.push();
@@ -1027,6 +1071,8 @@ impl Markdown {
                         self.code_block_string.push_str(&text);
                     } else if buffering_code {
                         code_runs.push((range, text.to_string()));
+                    } else if let Some((_, link_text)) = &mut link {
+                        link_text.push_str(text.trim_end_matches('\n'));
                     } else if host.is_some() {
                         draw_mapped(cx, tf, &mut host, source, text.trim_end_matches("\n"), range);
                     } else {
@@ -1038,6 +1084,8 @@ impl Markdown {
                         self.splash_block_string.push('\n');
                     } else if self.in_code_block {
                         self.code_block_string.push('\n');
+                    } else if let Some((_, link_text)) = &mut link {
+                        link_text.push(' ');
                     } else {
                         let flat_start = tf.text_len();
                         tf.draw_text(cx, " ");
