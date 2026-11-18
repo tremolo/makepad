@@ -16,6 +16,14 @@ static FRAME_RATE_BOOST_TIME: AtomicU64 = AtomicU64::new(0);
 /// The Activity covers its surface until a frame shows on it: at the start and across a pause or
 /// a lost surface.
 static SURFACE_COVERED: AtomicBool = AtomicBool::new(true);
+/// Whether Ctrl+V brings the clipboard's text ahead of the key ([`set_paste_chord`]).
+static PASTE_CHORD: AtomicBool = AtomicBool::new(true);
+
+/// Turn the Ctrl+V paste chord on or off (on by default). An app for which Ctrl+V is a key of
+/// its own, like a terminal, turns it off and pastes when it chooses (`Cx::read_clipboard`).
+pub fn set_paste_chord(enabled: bool) {
+    PASTE_CHORD.store(enabled, Ordering::Relaxed);
+}
 /// The Activity went to the background since the Vulkan backend last looked (`take_backgrounded`).
 static BACKGROUNDED: AtomicBool = AtomicBool::new(false);
 
@@ -382,7 +390,10 @@ fn key(code: i32) -> u32 {
 unsafe extern "system" fn key_down(_: *mut JNIEnv, _: jclass, code: jint, meta: jint, repeat: jboolean) { boost_frame_rate();
     let (code, mods) = (key(code), mods(meta));
     // the paste chord brings the clipboard's text, ahead of the key (as AppKit's shell does)
-    let paste = if mods & input::MOD_CONTROL != 0 && code == makepad_key_code::KeyCode::KeyV.to_index() {
+    let paste = if PASTE_CHORD.load(Ordering::Relaxed)
+        && mods & input::MOD_CONTROL != 0
+        && code == makepad_key_code::KeyCode::KeyV.to_index()
+    {
         with_activity(|env, activity| {
             let text = reg::object(env, activity, c"pasteFromClipboard", c"()Ljava/lang/String;", &[]);
             if ((**env).ExceptionCheck.unwrap())(env) != 0 { ((**env).ExceptionDescribe.unwrap())(env); ((**env).ExceptionClear.unwrap())(env); }

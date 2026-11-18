@@ -97,6 +97,16 @@ pub(crate) struct ClipboardRequests {
 }
 
 impl Cx {
+    /// Android: whether Ctrl+V on a hardware keyboard brings the clipboard's text ahead of the
+    /// key (on by default). A terminal turns it off: there Ctrl+V is a key for its program, and
+    /// it pastes with `read_clipboard` when it chooses. Other platforms: no effect.
+    pub fn set_android_paste_chord(&mut self, enabled: bool) {
+        #[cfg(target_os = "android")]
+        makepad_hal::backend::android::jni::set_paste_chord(enabled);
+        #[cfg(not(target_os = "android"))]
+        let _ = enabled;
+    }
+
     /// Enqueue a read, returning immediately. Match the id in `Event::Clipboard`;
     /// discard a late reply if its widget/document is no longer the paste destination.
     pub fn read_clipboard(&mut self) -> u64 {
