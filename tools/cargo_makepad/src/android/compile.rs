@@ -1654,6 +1654,36 @@ pub fn llvm_readelf_path(ndk_prebuilt_root: &Path) -> Option<PathBuf> {
     None
 }
 
+/// Strip a native library staged for the APK with the NDK's `llvm-strip --strip-all`:
+/// symbols and debug info only make the package bigger on the device. Left as it is
+/// when the NDK has no `llvm-strip`.
+fn strip_android_shared_lib(
+    sdk_dir: &Path,
+    host_os: HostOs,
+    urls: &AndroidSDKUrls,
+    so_path: &Path,
+) -> Result<(), String> {
+    let (_ndk_version, ndk_prebuilt_root) =
+        resolve_ndk_prebuilt_root(sdk_dir, host_os, urls.ndk_version_full)?;
+    let bin = ndk_prebuilt_root.join("bin");
+    let Some(strip_path) = ["llvm-strip", "llvm-strip.exe"]
+        .iter()
+        .map(|name| bin.join(name))
+        .find(|candidate| candidate.is_file())
+    else {
+        return Ok(());
+    };
+
+    let cwd = std::env::current_dir().unwrap();
+    shell_env_cap(
+        &[],
+        &cwd,
+        strip_path.to_str().unwrap(),
+        &["--strip-all", so_path.to_str().unwrap()],
+    )?;
+    Ok(())
+}
+
 /// Scan an ELF shared library for NEEDED entries using the NDK's llvm-readelf,
 /// then bundle any non-system shared libraries found in the NDK sysroot.
 ///
@@ -1729,6 +1759,7 @@ fn bundle_ndk_shared_deps(
         let binary_path = format!("lib/{abi}/{lib_name}");
         let dst_lib = build_paths.out_dir.join(&binary_path);
         cp(&candidate, &dst_lib, false)?;
+        strip_android_shared_lib(sdk_dir, host_os, urls, &dst_lib)?;
 
         shell_env_cap(
             &[],
@@ -1820,6 +1851,7 @@ fn bundle_local_shared_deps(
             };
 
             cp(&candidate, &dst_lib, false)?;
+            strip_android_shared_lib(sdk_dir, host_os, urls, &dst_lib)?;
             shell_env_cap(
                 &[],
                 &build_paths.out_dir,
@@ -1908,6 +1940,7 @@ fn add_rust_library(
         build_dir = Some(current_build_dir.clone());
         let dst_lib = build_paths.out_dir.join(binary_path.clone());
         cp(&src_lib, &dst_lib, false)?;
+        strip_android_shared_lib(sdk_dir, host_os, urls, &dst_lib)?;
 
         shell_env_cap(
             &[],
@@ -1975,6 +2008,7 @@ fn add_rust_library(
     if let AndroidVariant::Quest = variant {
         let binary_path = "lib/arm64-v8a/libopenxr_loader.so";
         cp(&quest_openxr_loader(), &build_paths.out_dir.join(binary_path), false)?;
+        strip_android_shared_lib(sdk_dir, host_os, urls, &build_paths.out_dir.join(binary_path))?;
         shell_env_cap(&[], &build_paths.out_dir, aapt_path(sdk_dir, urls).to_str().unwrap(),
             &["add", build_paths.dst_unaligned_apk.to_str().unwrap(), binary_path])?;
     }
