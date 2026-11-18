@@ -378,7 +378,13 @@ impl Cx {
             HalEvent::KeyDown { window: _, key, repeat, mods } => {
                 let e = KeyEvent { key_code: KeyCode::from_index(key), is_repeat: repeat, modifiers: key_modifiers(mods), time };
                 // the copy / cut chords ask the focused widget for its text; the answer is the clipboard
-                if e.modifiers.logo || e.modifiers.control {
+                // (on macOS with Cmd only: Ctrl+C and Ctrl+X are keys for the app there)
+                let chord = if cfg!(target_os = "macos") {
+                    e.modifiers.logo
+                } else {
+                    e.modifiers.logo || e.modifiers.control
+                };
+                if chord {
                     match e.key_code {
                         KeyCode::KeyC => self.hal_clipboard_chord(true),
                         KeyCode::KeyX => self.hal_clipboard_chord(false),
