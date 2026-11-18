@@ -2114,7 +2114,8 @@ fn add_resources(
 }
 
 // resources/ios is iOS-only; resources/android ships as runtime assets minus
-// the packaging inputs (manifest template, res/) already compiled into the package
+// the packaging inputs (manifest template, res/, the app's java/ sources and
+// java-libs/ jars) already compiled into the package
 fn is_supported_font_asset(path: &Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
@@ -2147,7 +2148,10 @@ fn cp_android_runtime_assets(
             &dst_dir.join("android"),
             &format!("{logical_prefix}/android"),
             |relative| {
-                relative.starts_with("AndroidManifest.xml.template") || relative.starts_with("res")
+                relative.starts_with("AndroidManifest.xml.template")
+                    || relative.starts_with("res")
+                    || relative.starts_with("java")
+                    || relative.starts_with("java-libs")
             },
             |_| Ok(()),
         )?;
@@ -3878,6 +3882,37 @@ mod tests {
         assert!(!packaged.join("international.ttf").exists());
         assert!(packaged.join("theme.ron").is_file());
         assert_eq!(inventory.fonts["demo_app/resources/latin.ttf"], 11);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn android_packaging_inputs_stay_out_of_runtime_assets() {
+        let manifest = FontAssetManifest::parse(
+            b"format=makepad.font-assets.v1\nset=Latin\nasset=demo_app/resources/latin.ttf\n",
+        )
+        .unwrap();
+        let root = temp_dir("packaging-inputs");
+        let source = root.join("source");
+        let assets = root.join("assets");
+        let android = source.join("android");
+        for dir in ["java/dev/app", "java-libs", "res/values"] {
+            fs::create_dir_all(android.join(dir)).unwrap();
+        }
+        fs::write(android.join("AndroidManifest.xml.template"), b"<manifest/>").unwrap();
+        fs::write(android.join("java/dev/app/Bridge.java"), b"class Bridge {}").unwrap();
+        fs::write(android.join("java-libs/lib.jar"), b"jar").unwrap();
+        fs::write(android.join("res/values/colors.xml"), b"<resources/>").unwrap();
+        fs::write(android.join("runtime.json"), b"{}").unwrap();
+
+        let mut package = FontPackage::new(&manifest);
+        stage_makepad_assets_subdir(&assets, "demo-app", &source, "resources", &mut package)
+            .unwrap();
+
+        let packaged = assets.join("makepad/demo_app/resources/android");
+        assert!(packaged.join("runtime.json").is_file());
+        for input in ["AndroidManifest.xml.template", "java", "java-libs", "res"] {
+            assert!(!packaged.join(input).exists(), "{input} was packaged");
+        }
         let _ = fs::remove_dir_all(root);
     }
 
