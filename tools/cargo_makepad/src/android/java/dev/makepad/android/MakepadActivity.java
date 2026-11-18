@@ -91,6 +91,7 @@ import android.widget.PopupWindow;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import android.widget.Toast;
 import android.window.OnBackInvokedCallback;
 import android.window.OnBackInvokedDispatcher;
 
@@ -4018,6 +4019,14 @@ public class MakepadActivity
     }
     
     
+
+    public void startMpmuxQrScanner() {
+        Toast.makeText(this, "QR scanner is unavailable in this Makepad build", Toast.LENGTH_LONG).show();
+    }
+
+    public void checkMpmuxSelfUpdate(String manifestUrl) {
+        Toast.makeText(this, "Update check is unavailable in this Makepad build", Toast.LENGTH_LONG).show();
+    }
 
     @SuppressWarnings("deprecation")
     public float getDeviceRefreshRate() {

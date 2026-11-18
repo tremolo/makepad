@@ -289,6 +289,7 @@ struct BuildPaths {
     manifest_file: PathBuf,
     java_file: PathBuf,
     xr_file: PathBuf,
+    app_java_dir: PathBuf,
     dst_unaligned_apk: PathBuf,
     dst_apk: PathBuf,
 }
@@ -1253,6 +1254,7 @@ fn prepare_build(opts: &PrepareBuildOpts<'_>) -> Result<BuildPaths, String> {
         manifest_file,
         java_file,
         xr_file,
+        app_java_dir: build_crate_dir.join("resources/android/java"),
         dst_unaligned_apk,
         dst_apk,
     })
@@ -1288,6 +1290,26 @@ fn build_r_class(
         ],
     )?;
 
+    Ok(())
+}
+
+fn collect_java_sources(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+    if !dir.is_dir() {
+        return Ok(());
+    }
+    let mut entries = fs::read_dir(dir)
+        .map_err(|e| format!("failed to read app Android Java dir {:?}: {e}", dir))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("failed to read app Android Java dir {:?}: {e}", dir))?;
+    entries.sort_by_key(|entry| entry.path());
+    for entry in entries {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_java_sources(&path, out)?;
+        } else if path.extension().is_some_and(|ext| ext == "java") {
+            out.push(path);
+        }
+    }
     Ok(())
 }
 
@@ -1335,6 +1357,8 @@ fn compile_java(
     ];
     let mut java_sources = java_sources;
     java_sources.extend(extra_sources.iter().cloned());
+    // The app's own Java (`<crate>/resources/android/java/**/*.java`), compiled with Makepad's.
+    collect_java_sources(&build_paths.app_java_dir, &mut java_sources)?;
 
     let mut hasher = DefaultHasher::new();
     for source in &java_sources {

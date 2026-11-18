@@ -36,6 +36,10 @@ pub mod hal;
 #[cfg(not(target_arch = "wasm32"))]
 pub use crate::os::hal::*;
 
+/// mpmux's direct calls into its `MakepadActivity` (QR scanner, updater, clipboard).
+#[cfg(target_os = "android")]
+pub mod android_jni;
+
 /// The GL function table of the GL interop API (`Cx::with_gl`).
 #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
 pub mod gl_sys;
