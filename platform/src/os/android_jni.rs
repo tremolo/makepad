@@ -153,3 +153,18 @@ pub unsafe fn to_java_check_mpmux_self_update(manifest_url: &str) -> Result<(), 
     ((**env).DeleteLocalRef.unwrap())(env, manifest_url);
     result
 }
+
+/// `MakepadNative.onAndroidIntentUrl`: the activity stored a pairing link it was handed (a QR
+/// scan or an intent) where the app looks for it; wake the app so it does. An app-side native
+/// the HAL does not register: ART finds it by this exported name.
+///
+/// # Safety
+/// Called by ART with the arguments of its Java declaration.
+#[no_mangle]
+pub unsafe extern "C" fn Java_dev_makepad_android_MakepadNative_onAndroidIntentUrl(
+    _env: *mut jni_sys::JNIEnv,
+    _class: jni_sys::jclass,
+    _url: jni_sys::jstring,
+) {
+    crate::thread::SignalToUI::set_ui_signal();
+}

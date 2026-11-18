@@ -290,6 +290,7 @@ struct BuildPaths {
     java_file: PathBuf,
     xr_file: PathBuf,
     app_java_dir: PathBuf,
+    app_java_lib_dir: PathBuf,
     dst_unaligned_apk: PathBuf,
     dst_apk: PathBuf,
 }
@@ -1255,6 +1256,7 @@ fn prepare_build(opts: &PrepareBuildOpts<'_>) -> Result<BuildPaths, String> {
         java_file,
         xr_file,
         app_java_dir: build_crate_dir.join("resources/android/java"),
+        app_java_lib_dir: build_crate_dir.join("resources/android/java-libs"),
         dst_unaligned_apk,
         dst_apk,
     })
@@ -1313,6 +1315,27 @@ fn collect_java_sources(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String
     Ok(())
 }
 
+/// The app's Java libraries (`<crate>/resources/android/java-libs/*.jar`): on the javac
+/// classpath and dexed into the APK.
+fn collect_java_libraries(dir: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut libs = Vec::new();
+    if !dir.is_dir() {
+        return Ok(libs);
+    }
+    let mut entries = fs::read_dir(dir)
+        .map_err(|e| format!("failed to read app Android Java library dir {:?}: {e}", dir))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("failed to read app Android Java library dir {:?}: {e}", dir))?;
+    entries.sort_by_key(|entry| entry.path());
+    for entry in entries {
+        let path = entry.path();
+        if path.is_file() && path.extension().is_some_and(|ext| ext == "jar") {
+            libs.push(path);
+        }
+    }
+    Ok(libs)
+}
+
 fn compile_java(
     sdk_dir: &Path,
     build_paths: &BuildPaths,
@@ -1359,12 +1382,19 @@ fn compile_java(
     java_sources.extend(extra_sources.iter().cloned());
     // The app's own Java (`<crate>/resources/android/java/**/*.java`), compiled with Makepad's.
     collect_java_sources(&build_paths.app_java_dir, &mut java_sources)?;
+    let java_libs = collect_java_libraries(&build_paths.app_java_lib_dir)?;
 
     let mut hasher = DefaultHasher::new();
     for source in &java_sources {
         source.to_string_lossy().hash(&mut hasher);
         fs::read(source)
             .map_err(|e| format!("failed to read Java source {:?}: {e}", source))?
+            .hash(&mut hasher);
+    }
+    for lib in &java_libs {
+        lib.to_string_lossy().hash(&mut hasher);
+        fs::read(lib)
+            .map_err(|e| format!("failed to read Java library {:?}: {e}", lib))?
             .hash(&mut hasher);
     }
     let java_inputs_hash = format!("{:016x}", hasher.finish());
@@ -1403,6 +1433,11 @@ fn compile_java(
     }
 
     let android_jar = android_jar_path(sdk_dir, urls);
+    let classpath_separator = if cfg!(windows) { ";" } else { ":" };
+    let java_classpath = std::iter::once(android_jar.to_string_lossy().into_owned())
+        .chain(java_libs.iter().map(|path| path.to_string_lossy().into_owned()))
+        .collect::<Vec<_>>()
+        .join(classpath_separator);
     let _ = rmdir(&build_paths.java_out_dir);
     mkdir(&build_paths.java_out_dir)?;
     // Force UTF-8: Chinese Windows defaults javac to GBK, and UTF-8 comments
@@ -1416,7 +1451,7 @@ fn compile_java(
         "1.8",
         "-Xlint:-options",
         "-classpath",
-        android_jar.to_str().unwrap(),
+        &java_classpath,
         "-Xlint:deprecation",
         "-d",
         build_paths.java_out_dir.to_str().unwrap(),
@@ -1464,6 +1499,7 @@ fn build_dex(
 
     let d8_jar = d8_jar_path(sdk_dir, urls);
     let android_jar = android_jar_path(sdk_dir, urls);
+    let java_libs = collect_java_libraries(&build_paths.app_java_lib_dir)?;
 
     // Without --min-api, D8 defaults to API 1 and desugars interface DEFAULT
     // methods into `<Interface>$-CC` companion classes — which it cannot emit
@@ -1488,6 +1524,9 @@ fn build_dex(
 
     for class_file in &class_files {
         args.push(class_file.to_str().unwrap());
+    }
+    for lib in &java_libs {
+        args.push(lib.to_str().unwrap());
     }
 
     shell_env_cap(
